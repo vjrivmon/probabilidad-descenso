@@ -28,17 +28,17 @@ Con `α = 1` y sin ajustes recuperas el **modelo "puro"** (solo Elo), que sirve 
 
 ## Estado
 
-En construcción. Plan por checkpoints (cada uno usable):
+Plan por checkpoints (cada uno usable):
 
-- **CP1 — MVP:** datos (Elo de clubelo + calendario de FBref) → `simulate` / `report` con el modelo puro (reproduce el enfoque de @LaLigaenDirecto).
+- **CP1 — MVP (funcionando):** `data refresh` (Elo de clubelo + calendario de [openfootball](https://github.com/openfootball/football.json)), dominio + simulador Monte Carlo vectorizado, `simulate` / `report` con el modelo puro (reproduce el enfoque de @LaLigaenDirecto). 100 000 simulaciones en ~1 s.
 - **CP2 — el diferencial:** xG de Understat + `StrengthModel` (forma + entrenadores + bajas) + `compare` + `backtest`.
 - **CP3 — refinamientos (opcional):** marcadores con Poisson bivariada + Dixon-Coles, autocalibración de α/half-life, feature experimental de sentimiento (NLP), export HTML.
 
-Lo que existe ahora es el **scaffold** (estructura, configuración, CLI con los comandos definidos, tests de humo). La lógica del modelo se implementa en los checkpoints siguientes.
+> Nota sobre las fuentes: FBref era la fuente prevista para el calendario, pero está detrás de Cloudflare y no es scrapeable; el calendario sale de `openfootball/football.json` (repo público, sin clave). El Elo viene de la API CSV de clubelo.com. `descenso compare` / `descenso backtest` avisan de que llegan en el CP2.
 
 ## Stack
 
-Python 3.11+ · [Typer](https://typer.tiangolo.com/) (CLI) · [Rich](https://rich.readthedocs.io/) · httpx · pandas · numpy · scipy · pydantic v2. Cache local en Parquet. Solo fuentes de datos **gratuitas**: [clubelo.com](http://clubelo.com/) (Elo), [Understat](https://understat.com/) (xG), [FBref](https://fbref.com/) (calendario).
+Python 3.11+ · [Typer](https://typer.tiangolo.com/) (CLI) · [Rich](https://rich.readthedocs.io/) · httpx · pandas · numpy · scipy · pydantic v2. Cache local en Parquet. Solo fuentes de datos **gratuitas**: [clubelo.com](http://clubelo.com/) (Elo, API CSV), [openfootball/football.json](https://github.com/openfootball/football.json) (calendario), [Understat](https://understat.com/) (xG, CP2).
 
 ## Cómo empezar
 
@@ -51,14 +51,15 @@ python3 -m venv .venv && source .venv/bin/activate
 # 2. Instalar (modo editable, con dependencias de desarrollo)
 pip install -e ".[dev]"
 
-# 3. Comandos (los que aún no están implementados avisan; ver "Estado")
+# 3. Comandos (compare/backtest llegan en el CP2; ver "Estado")
 descenso --help
-descenso data refresh        # descarga Elo + calendario + xG al cache local
-descenso simulate            # interactivo: introduce resultados o deja todo al azar
-descenso simulate --fix "Levante 3-2 Osasuna" --sims 100000 --seed 1
-descenso report --copy       # imprime el ranking en formato tweet y lo copia al portapapeles
-descenso compare             # modelo puro vs ajustado, con la diferencia por equipo
-descenso backtest --seasons 2022,2023,2024 --horizon 5
+descenso data refresh                       # descarga Elo + calendario al cache local
+descenso data show                          # qué hay en el cache y de qué fecha
+descenso simulate                           # interactivo: introduce resultados o deja todo al azar
+descenso simulate --no-interactive --sims 100000 --seed 1
+descenso simulate --fix "Levante 3-2 Osasuna" --fix "Oviedo 0-0 Getafe"
+descenso report --copy                      # reimprime el último ranking y lo copia al portapapeles
+descenso report --top 6
 ```
 
 Toda la configuración del modelo (α, vida media de la forma, ventaja de campo, bonus por cambio de entrenador, nº de simulaciones...) está en [`config.yaml`](config.yaml). Los cambios de entrenador y las bajas, en [`data/coach_changes.yaml`](data/coach_changes.yaml).
@@ -78,8 +79,8 @@ mypy src tests               # tipos
 | Capa | Qué hace |
 |------|----------|
 | `descenso.domain` | Entidades puras (`Team`, `Match`), clasificación + desempates de LaLiga, modelo de fuerza con memoria de forma, modelo de partido, simulador Monte Carlo vectorizado. Sin IO. |
-| `descenso.adapters.data` | Descarga y cachea Elo (clubelo), calendario (FBref), xG (Understat); lee `coach_changes.yaml` y `team_aliases.yaml`. |
-| `descenso.application` | Casos de uso: construir fuerzas, correr simulación, comparar modelos, backtest. |
+| `descenso.adapters.data` | Descarga y cachea Elo (clubelo), calendario (openfootball), xG (Understat, CP2); lee `coach_changes.yaml` y `team_aliases.yaml`. Cache Parquet con escritura atómica; modo offline (`prefer_cache`) para que `simulate`/`report` no toquen la red. |
+| `descenso.application` | Casos de uso: correr simulación (`run_simulation`), construir fuerzas (CP2), comparar modelos (CP2), backtest (CP2). |
 | `descenso.cli` | La interfaz de terminal (Typer + Rich). |
 
 Más detalle (diagramas C4, modelo de datos, definición matemática del modelo, edge cases) en `.apex/wiki/` mientras el proyecto está en desarrollo.
