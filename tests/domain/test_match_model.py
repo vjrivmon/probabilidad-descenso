@@ -58,3 +58,15 @@ def test_sample_scores_is_reproducible_with_same_seed() -> None:
     a_h, a_a = mm.sample_scores(home, away, np.random.default_rng(7))
     b_h, b_a = mm.sample_scores(home, away, np.random.default_rng(7))
     assert np.array_equal(a_h, b_h) and np.array_equal(a_a, b_a)
+
+
+def test_sample_categorical_size_cero_devuelve_array_vacio() -> None:
+    """_sample_categorical con size=0 debe devolver un array vacío sin errores."""
+    from descenso.domain.match_model import _sample_categorical
+
+    rng = np.random.default_rng(1)
+    vals = np.array([0, 1, 2])
+    probs = np.array([0.3, 0.4, 0.3])
+    result = _sample_categorical(vals, probs, 0, rng)
+    assert result.shape == (0,)
+    assert result.dtype == np.int64

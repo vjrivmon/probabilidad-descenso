@@ -27,5 +27,9 @@ data/fixtures_override.csv
 # MCP / tooling logs (not part of the project)
 logs/
 
+# APEX: ficheros transitorios de SQLite (el WAL del context.db)
+.apex/context.db-shm
+.apex/context.db-wal
+
 # Secrets (none expected; the repo is public)
 .env

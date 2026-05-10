@@ -68,4 +68,16 @@ addopts = "-q"
 
 [tool.coverage.run]
 source = ["src/descenso"]
-omit = ["src/descenso/cli/*", "src/descenso/application/scrape_replies.py"]
+omit = [
+    # CLI: difícil de medir con respx/CliRunner y no es lógica de dominio
+    "src/descenso/cli/*",
+    # Script de uso único (CP0)
+    "src/descenso/application/scrape_replies.py",
+    # Stubs del CP2/CP3: entran en cobertura cuando se implementen
+    "src/descenso/domain/strength_model.py",
+    "src/descenso/application/backtest.py",
+    "src/descenso/application/build_strengths.py",
+    "src/descenso/application/compare_models.py",
+    "src/descenso/adapters/data/understat_xg.py",
+    "src/descenso/adapters/data/coach_changes_file.py",
+]
