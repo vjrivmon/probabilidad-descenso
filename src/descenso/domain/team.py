@@ -13,6 +13,9 @@ class Team(BaseModel):
     clubelo_name: str | None = Field(default=None, description="nombre en clubelo.com")
     understat_name: str | None = Field(default=None, description="nombre/id en Understat")
     fbref_name: str | None = Field(default=None, description="nombre en FBref")
+    openfootball_name: str | None = Field(
+        default=None, description="nombre en openfootball/football.json (es.1.json)"
+    )
     elo_base: float | None = Field(default=None, description="último Elo de clubelo")
 
     model_config = {"frozen": True}

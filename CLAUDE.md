@@ -36,7 +36,7 @@ descenso --help                  # la CLI
 ## Estructura
 
 - `src/descenso/domain/` — `Team`, `Match`, `standings`/`tiebreakers` (reglas LaLiga, incl. mini-liga de empates a 3+), `strength_model` (el diferencial), `match_model` (Elo-logístico en CP1; Poisson+Dixon-Coles en CP3), `simulator` (Monte Carlo vectorizado), `probabilities`.
-- `src/descenso/adapters/data/` — `clubelo_elo`, `fbref_schedule`, `understat_xg`, `coach_changes_file`, `team_aliases`, `cache`.
+- `src/descenso/adapters/data/` — `clubelo_elo` (Elo, endpoint de fecha de clubelo.com), `schedule` (calendario LaLiga vía openfootball/football.json — FBref está tras Cloudflare; `data/fixtures_override.csv` como salida de emergencia), `understat_xg` (xG, CP2), `coach_changes_file` (CP2), `team_aliases`, `cache` (Parquet atómico). Los `fetch_*` aceptan `prefer_cache=True` para modo offline (`simulate`/`report` leen el cache; `data refresh` fuerza red).
 - `src/descenso/application/` — `build_strengths`, `run_simulation`, `compare_models`, `backtest`, `scrape_replies` (CP0, uso único).
 - `src/descenso/cli/app.py` — Typer: `data refresh|show`, `simulate`, `report`, `compare`, `backtest`.
 - `config.yaml` — parámetros del modelo. `data/coach_changes.yaml`, `data/team_aliases.yaml` — datos editables.
@@ -44,6 +44,6 @@ descenso --help                  # la CLI
 
 ## Checkpoints (estado del roadmap)
 
-- **CP1 (MVP)**: `data refresh` (clubelo + FBref), dominio + simulador, `simulate`/`report` con modelo **puro**. Criterio: `descenso simulate --no-interactive --seed 1 --sims 100000` < 5 s, ranking coherente con la tabla real, tests y CI verdes.
+- **CP1 (MVP)**: `data refresh` (Elo de clubelo + calendario de openfootball), dominio + simulador, `simulate`/`report` con modelo **puro**. Criterio: `descenso simulate --no-interactive --seed 1 --sims 100000` < 5 s, ranking coherente con la tabla real, tests y CI verdes.
 - **CP2**: Understat (xG), `StrengthModel` (forma/entrenadores/bajas), `compare`, `backtest`. Criterio: el backtest imprime Brier/log-loss puro vs ajustado; objetivo de mejora ≥5%.
 - **CP3 (opcional)**: Poisson+Dixon-Coles, autocalibración, sentimiento NLP (opt-in, experimental), export HTML.

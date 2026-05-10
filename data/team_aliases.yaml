@@ -1,114 +1,134 @@
 # Mapeo de nombres de equipo entre las fuentes de datos.
-#   id            -> slug interno estable (no cambia nunca)
-#   name          -> nombre para mostrar
-#   clubelo_name  -> nombre exacto en clubelo.com (http://api.clubelo.com/<name>)
-#   understat_name-> nombre del equipo en understat.com
-#   fbref_name    -> nombre del equipo en fbref.com
+#   id              -> slug interno estable (no cambia nunca)
+#   name            -> nombre para mostrar
+#   clubelo_name    -> nombre exacto en clubelo.com (http://api.clubelo.com/<name>)
+#   understat_name  -> nombre del equipo en understat.com
+#   fbref_name      -> nombre del equipo en fbref.com
+#   openfootball_name -> nombre del equipo en openfootball/football.json (es.1.json)
 #
-# OJO: los `clubelo_name` de abajo son la mejor aproximación; deben verificarse
-# en la Fase 7 contactando con la API real de clubelo (algunos usan grafías
-# distintas, p.ej. "Bilbao" para el Athletic). El proceso de carga falla con un
-# error claro si un nombre de una fuente no aparece aquí.
+# El proceso de carga falla con un error claro si un nombre de una fuente no
+# aparece aquí (ver adapters/data/team_aliases.resolve_from_source).
 #
-# Plantel de LaLiga 2025-26 (20 equipos):
+# Plantel de LaLiga 2025-26 (20 equipos). clubelo_name y openfootball_name están
+# verificados contra las respuestas reales de cada fuente (2026-05-10).
 
 - id: barcelona
   name: FC Barcelona
   clubelo_name: Barcelona
   understat_name: Barcelona
   fbref_name: Barcelona
+  openfootball_name: FC Barcelona
 - id: real-madrid
   name: Real Madrid
   clubelo_name: Real Madrid
   understat_name: Real Madrid
   fbref_name: Real Madrid
+  openfootball_name: Real Madrid CF
 - id: atletico-madrid
   name: Atlético de Madrid
   clubelo_name: Atletico
   understat_name: Atletico Madrid
   fbref_name: Atlético Madrid
+  openfootball_name: Club Atlético de Madrid
 - id: athletic-club
   name: Athletic Club
   clubelo_name: Bilbao
   understat_name: Athletic Club
   fbref_name: Athletic Club
+  openfootball_name: Athletic Club
 - id: villarreal
   name: Villarreal CF
   clubelo_name: Villarreal
   understat_name: Villarreal
   fbref_name: Villarreal
+  openfootball_name: Villarreal CF
 - id: real-betis
   name: Real Betis
   clubelo_name: Betis
   understat_name: Real Betis
   fbref_name: Betis
+  openfootball_name: Real Betis Balompié
 - id: celta-vigo
   name: Celta de Vigo
   clubelo_name: Celta
   understat_name: Celta Vigo
   fbref_name: Celta Vigo
+  openfootball_name: RC Celta de Vigo
 - id: rayo-vallecano
   name: Rayo Vallecano
   clubelo_name: Rayo Vallecano
   understat_name: Rayo Vallecano
   fbref_name: Rayo Vallecano
+  openfootball_name: Rayo Vallecano de Madrid
 - id: osasuna
   name: CA Osasuna
   clubelo_name: Osasuna
   understat_name: Osasuna
   fbref_name: Osasuna
+  openfootball_name: CA Osasuna
 - id: mallorca
   name: RCD Mallorca
   clubelo_name: Mallorca
   understat_name: Mallorca
   fbref_name: Mallorca
+  openfootball_name: RCD Mallorca
 - id: real-sociedad
   name: Real Sociedad
   clubelo_name: Sociedad
   understat_name: Real Sociedad
   fbref_name: Real Sociedad
+  openfootball_name: Real Sociedad de Fútbol
 - id: valencia
   name: Valencia CF
   clubelo_name: Valencia
   understat_name: Valencia
   fbref_name: Valencia
+  openfootball_name: Valencia CF
 - id: getafe
   name: Getafe CF
   clubelo_name: Getafe
   understat_name: Getafe
   fbref_name: Getafe
+  openfootball_name: Getafe CF
 - id: espanyol
   name: RCD Espanyol
   clubelo_name: Espanyol
   understat_name: Espanyol
   fbref_name: Espanyol
+  openfootball_name: RCD Espanyol de Barcelona
 - id: alaves
   name: Deportivo Alavés
   clubelo_name: Alaves
   understat_name: Alaves
   fbref_name: Alavés
+  openfootball_name: Deportivo Alavés
 - id: sevilla
   name: Sevilla FC
   clubelo_name: Sevilla
   understat_name: Sevilla
   fbref_name: Sevilla
+  openfootball_name: Sevilla FC
 - id: girona
   name: Girona FC
   clubelo_name: Girona
   understat_name: Girona
   fbref_name: Girona
+  openfootball_name: Girona FC
 - id: levante
   name: Levante UD
   clubelo_name: Levante
   understat_name: Levante
   fbref_name: Levante
+  openfootball_name: Levante UD
 - id: elche
   name: Elche CF
   clubelo_name: Elche
   understat_name: Elche
   fbref_name: Elche
+  openfootball_name: Elche CF
 - id: real-oviedo
   name: Real Oviedo
   clubelo_name: Oviedo
   understat_name: Real Oviedo
   fbref_name: Real Oviedo
+  openfootball_name: Real Oviedo
