@@ -15,3 +15,4 @@
 - **2026-05-10 14:43** — Actualizada página: entities/data-model
 - **2026-05-10 14:44** — Actualizada página: SPEC
 - **2026-05-10 14:52** — Actualizada página: EDGE-CASES
+- **2026-05-10 15:29** — Actualizada página: entities/openfootball

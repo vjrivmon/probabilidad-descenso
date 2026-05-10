@@ -6,6 +6,7 @@
 ## Entidades
 - [[entities/data-model]] — Modelo de datos — descenso
 - [[entities/laligaendirecto]] — @LaLigaenDirecto (Fran Martínez) — modelo de referencia
+- [[entities/openfootball]] — openfootball/football.json — fuente del calendario
 
 ## Conceptos
 - [[concepts/architecture]] — Arquitectura — descenso (C4 + modelo)
