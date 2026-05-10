@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Project data (downloaded / generated)
+data/cache/
+data/replies.txt
+data/fixtures_override.csv
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# MCP / tooling logs (not part of the project)
+logs/
+
+# Secrets (none expected; the repo is public)
+.env
