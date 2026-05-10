@@ -17,6 +17,12 @@ model:
   home_advantage_elo: 65.0    # ventaja de campo, en puntos Elo
   draw_base: 0.26             # suelo de probabilidad de empate (los empates en LaLiga rondan el 25 %)
 
+  # --- modelo de marcador ---
+  match_model: elo_logistic   # 'elo_logistic' (CP1: W/D/L logístico + margen muestreado) o 'dixon_coles' (CP3: Poisson bivariada + Dixon-Coles, marcadores más realistas)
+  goals_avg: 1.35             # goles por equipo y partido de referencia (base del modelo dixon_coles)
+  elo_to_goals_scale: 400.0   # puntos Elo por e-fold de los goles esperados (más bajo = la diferencia de Elo pesa más en el marcador)
+  dixon_coles_rho: -0.1       # corrección de Dixon-Coles para marcadores bajos (negativo = más 0-0 y 1-1, menos 1-0 y 0-1; rango [-0.2, 0.2])
+
   # --- eventos discretos ---
   coach_bump_default: 25.0    # bonus Elo inicial tras un cambio de entrenador (efecto rebote)
   coach_bump_decay_matches: 6 # nº de partidos en los que ese bonus decae linealmente a 0

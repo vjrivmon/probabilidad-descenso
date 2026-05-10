@@ -32,7 +32,7 @@ Plan por checkpoints (cada uno usable):
 
 - **CP1 — MVP (funcionando):** `data refresh` (Elo de clubelo + calendario de [openfootball](https://github.com/openfootball/football.json)), dominio + simulador Monte Carlo vectorizado, `simulate` / `report` con el modelo puro (reproduce el enfoque de @LaLigaenDirecto). 100 000 simulaciones en ~1 s.
 - **CP2 — el diferencial (funcionando):** `StrengthModel` con memoria de forma (rendimiento reciente ponderado exp. vs. Elo + decaimiento + bumps de entrenador / bajas de `coach_changes.yaml`), cableado en `simulate`; `compare` (puro vs. ajustado, equipo a equipo) y `backtest` (Brier / log-loss sobre temporadas pasadas, sin data leakage). La parte de **xG de Understat** está implementada pero hoy *inactiva* (ver nota); el análisis de sensibilidad de los parámetros está en [`docs/sensitivity.md`](docs/sensitivity.md).
-- **CP3 — refinamientos (opcional):** marcadores con Poisson bivariada + Dixon-Coles, autocalibración de α/half-life/K, feature experimental de sentimiento (NLP), export HTML.
+- **CP3 — refinamientos (funcionando, salvo el sentimiento):** modelo de marcador **Poisson bivariada + Dixon-Coles** opcional (`model.match_model: dixon_coles` en `config.yaml`): los goles esperados de cada equipo salen de su fuerza efectiva (escala Elo) y los marcadores de dos Poisson independientes con la corrección de Dixon-Coles para los resultados bajos — marcadores más realistas, mejor fidelidad al desempate por diferencia de goles. `descenso calibrate` autocalibra `alpha` / `form_half_life_days` / `form_k_factor` minimizando el Brier del backtest (scipy Nelder-Mead, seed fija; no toca `config.yaml`, solo sugiere). `descenso report --html informe.html` escribe un informe HTML estático autocontenido (CSS y gráfico de barras SVG en línea, sin JavaScript). Pendiente: feature experimental de **sentimiento** (NLP) — depende del CP0 (analizar los replies de @LaLigaenDirecto), que aún no se ha hecho.
 
 > Nota sobre las fuentes: FBref está detrás de Cloudflare y no es scrapeable → el calendario sale de `openfootball/football.json` (repo público, sin clave). El Elo viene de la API CSV de clubelo.com (endpoint de fecha). **Understat** ha dejado de servir a clientes no-navegador el bloque de datos embebido con el xG: `descenso data refresh` lo intenta y, si falla, sigue sin xG avisándolo; el modelo degrada solo a "solo goles reales". Si vuelve a ser accesible (o aparece otra fuente de xG), el modelo lo incorpora sin más cambios.
 
@@ -60,8 +60,10 @@ descenso simulate --no-interactive --sims 100000 --seed 1
 descenso simulate --fix "Levante 3-2 Osasuna" --fix "Oviedo 0-0 Getafe"
 descenso report --copy                      # reimprime el último ranking y lo copia al portapapeles
 descenso report --top 6
+descenso report --html informe.html         # además, escribe un informe HTML estático
 descenso compare --sims 50000 --seed 1      # modelo puro vs. ajustado, equipo a equipo, con la nota del factor responsable
 descenso backtest --seasons 2022,2023 --horizon 8   # Brier / log-loss puro vs. ajustado sobre temporadas pasadas
+descenso calibrate --seasons 2022,2023 --horizon 8  # autocalibra alpha / half-life / K minimizando el Brier del backtest
 ```
 
 Toda la configuración del modelo (α, vida media de la forma, ventaja de campo, bonus por cambio de entrenador, nº de simulaciones...) está en [`config.yaml`](config.yaml). Los cambios de entrenador y las bajas, en [`data/coach_changes.yaml`](data/coach_changes.yaml).
@@ -82,7 +84,7 @@ mypy src tests               # tipos
 |------|----------|
 | `descenso.domain` | Entidades puras (`Team`, `Match`), clasificación + desempates de LaLiga, modelo de fuerza con memoria de forma, modelo de partido, simulador Monte Carlo vectorizado. Sin IO. |
 | `descenso.adapters.data` | Descarga y cachea Elo (clubelo), calendario (openfootball), xG (Understat, CP2); lee `coach_changes.yaml` y `team_aliases.yaml`. Cache Parquet con escritura atómica; modo offline (`prefer_cache`) para que `simulate`/`report` no toquen la red. |
-| `descenso.application` | Casos de uso: correr simulación (`run_simulation`), construir fuerzas (CP2), comparar modelos (CP2), backtest (CP2). |
+| `descenso.application` | Casos de uso: correr simulación (`run_simulation`), construir fuerzas (CP2), comparar modelos (CP2), backtest (CP2), autocalibración (`calibrate`, CP3), informe HTML (`export_html`, CP3). |
 | `descenso.cli` | La interfaz de terminal (Typer + Rich). |
 
 Más detalle (diagramas C4, modelo de datos, definición matemática del modelo, edge cases) en `.apex/wiki/` mientras el proyecto está en desarrollo.

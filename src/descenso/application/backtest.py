@@ -4,6 +4,12 @@ Para cada temporada pasada y cada jornada del tramo final, reconstruye el estado
 *as-of* esa jornada (¡sin data leakage!), predice P(descenso) con ambos modelos y
 lo compara con el desenlace real. Reporta Brier score y log-loss.
 
+El estado as-of de una temporada (equipos, tabla base, Elo de la fecha de corte,
+partidos pendientes ya sin marcador, descensos reales) se encapsula en
+`PreparedSeason` para poder reutilizarlo: `run_backtest` lo usa una vez por modelo,
+y la autocalibración (`application.calibrate`) muchas veces con distintos
+parámetros sin re-descargar nada.
+
 Invariante anti-leakage (verificado en el código):
     ningún partido marcado 'jugado' tiene fecha > fecha_corte.
 """
@@ -11,6 +17,7 @@ Invariante anti-leakage (verificado en el código):
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import logging
 import math
@@ -27,9 +34,9 @@ from descenso.adapters.data.schedule import OPENFOOTBALL_BASE, season_slug
 from descenso.adapters.data.understat_xg import UnderstatError, UnderstatXgSource
 from descenso.config import AppConfig, ModelConfig
 from descenso.domain.match import Match, MatchStatus
-from descenso.domain.match_model import EloLogisticMatchModel
+from descenso.domain.match_model import make_match_model
 from descenso.domain.simulator import SimulationConfig, run_monte_carlo
-from descenso.domain.standings import build_table, order_table
+from descenso.domain.standings import TeamRow, build_table, order_table
 from descenso.domain.strength_model import compute_strengths, effective_strengths
 from descenso.domain.team import Team
 
@@ -40,6 +47,28 @@ _CLIP_MAX = 1.0 - 1e-12
 
 # Patrón de ronda para extraer número de jornada
 _ROUND_RE = re.compile(r"(\d+)")
+
+# Seed por defecto del backtest: fija a propósito para que el Brier sea determinista
+# dado el config (necesario para que la autocalibración tenga un objetivo estable).
+BACKTEST_SEED = 42
+
+_RELEGATION_PLACES = 3
+
+
+@dataclass(frozen=True)
+class PreparedSeason:
+    """Estado as-of de una temporada para el backtest (todos los datos ya cargados)."""
+
+    season: int
+    teams: list[Team]
+    team_ids: list[str]
+    base_table: list[TeamRow]
+    played_asof: list[Match]
+    pending_asof: list[Match]  # ya sin marcador (se simulan)
+    elo: dict[str, float]
+    cutoff_date: dt.date
+    cutoff_gameweek: int
+    relegated_real: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -59,30 +88,28 @@ class BacktestResult:
         return (self.brier_pure - self.brier_adjusted) / self.brier_pure
 
 
-def run_backtest(
-    seasons: list[int],
-    config: AppConfig,
-    horizon_gameweeks: int = 5,
-    n_sims: int = 20_000,
-    seed: int | None = None,
-) -> BacktestResult:
-    """Backtest histórico sin data leakage.
+# --------------------------------------------------------------------------- #
+# configs derivadas (puro vs ajustado)
+# --------------------------------------------------------------------------- #
 
-    Para cada temporada en `seasons`:
-    1. Descarga el calendario completo de openfootball.
-    2. Si no tiene 380 partidos jugados, la salta (temporada incompleta).
-    3. Construye el estado as-of (jornada 38 - horizon_gameweeks).
-    4. Baja el Elo de clubelo a la fecha de corte.
-    5. Simula con ambos modelos (puro y ajustado).
-    6. Calcula Brier y log-loss contra el desenlace real.
 
-    Devuelve las medias agregadas sobre todos los (temporada, equipo).
-    """
-    if seed is None:
-        seed = 42  # seed fija para reproducibilidad del backtest
+def pure_model_cfg(config: AppConfig) -> ModelConfig:
+    """Config del modelo "puro": `alpha = 1.0`, sin deltas (≡ el modelo del CP1)."""
+    return ModelConfig(**{**config.model.model_dump(), "alpha": 1.0, "model_type": "pure"})
 
-    cache = ParquetCache(config.paths.cache_dir)
-    client = httpx.Client(
+
+def adjusted_model_cfg(config: AppConfig, **overrides: object) -> ModelConfig:
+    """Config del modelo ajustado, con sobreescrituras opcionales (usado por `calibrate`)."""
+    return ModelConfig(**{**config.model.model_dump(), "model_type": "adjusted", **overrides})
+
+
+# --------------------------------------------------------------------------- #
+# preparación de temporadas (descarga + estado as-of)
+# --------------------------------------------------------------------------- #
+
+
+def _new_client() -> httpx.Client:
+    return httpx.Client(
         timeout=30.0,
         follow_redirects=True,
         headers={
@@ -90,75 +117,49 @@ def run_backtest(
         },
     )
 
-    brier_pure_vals: list[float] = []
-    brier_adj_vals: list[float] = []
-    logloss_pure_vals: list[float] = []
-    logloss_adj_vals: list[float] = []
-    seasons_used: list[int] = []
 
-    for season in seasons:
-        result = _backtest_season(
-            season=season,
-            config=config,
-            horizon=horizon_gameweeks,
-            n_sims=n_sims,
-            seed=seed,
-            cache=cache,
-            client=client,
-        )
-        if result is None:
-            continue
+def prepare_seasons(
+    seasons: list[int],
+    config: AppConfig,
+    horizon_gameweeks: int,
+    cache: ParquetCache | None = None,
+    client: httpx.Client | None = None,
+) -> list[PreparedSeason]:
+    """Construye el estado as-of de cada temporada *completa* en openfootball.
 
-        seasons_used.append(season)
-        bp, ba, lp, la = result
-        brier_pure_vals.extend(bp)
-        brier_adj_vals.extend(ba)
-        logloss_pure_vals.extend(lp)
-        logloss_adj_vals.extend(la)
-
-    if not seasons_used:
-        raise ValueError(
-            f"ninguna de las temporadas {seasons} está completa en openfootball "
-            f"(¿has corrido `descenso data refresh`?)"
-        )
-
-    return BacktestResult(
-        seasons=seasons_used,
-        horizon_gameweeks=horizon_gameweeks,
-        n_sims=n_sims,
-        brier_pure=_mean(brier_pure_vals),
-        brier_adjusted=_mean(brier_adj_vals),
-        logloss_pure=_mean(logloss_pure_vals),
-        logloss_adjusted=_mean(logloss_adj_vals),
-    )
+    Las temporadas incompletas (no tienen 380 partidos jugados) o de las que no se
+    puede determinar la fecha de corte se saltan con un aviso.
+    """
+    cache = cache or ParquetCache(config.paths.cache_dir)
+    own_client = client is None
+    client = client or _new_client()
+    try:
+        prepared: list[PreparedSeason] = []
+        for season in seasons:
+            ps = _prepare_season(season, config, horizon_gameweeks, cache, client)
+            if ps is not None:
+                prepared.append(ps)
+        return prepared
+    finally:
+        if own_client:
+            client.close()
 
 
-# --------------------------------------------------------------------------- #
-# lógica por temporada
-# --------------------------------------------------------------------------- #
-
-
-def _backtest_season(
+def _prepare_season(
     season: int,
     config: AppConfig,
     horizon: int,
-    n_sims: int,
-    seed: int,
     cache: ParquetCache,
     client: httpx.Client,
-) -> tuple[list[float], list[float], list[float], list[float]] | None:
-    """Devuelve (brier_pure[], brier_adj[], logloss_pure[], logloss_adj[]) o None si la salta."""
+) -> PreparedSeason | None:
     slug = season_slug(season)
     cache_name = f"backtest_schedule_{season}"
 
-    # Descargar o recuperar del cache
-    raw_matches_data_or_none = _load_raw_matches(season, slug, cache_name, cache, client)
-    if raw_matches_data_or_none is None:
+    raw_matches = _load_raw_matches(season, slug, cache_name, cache, client)
+    if raw_matches is None:
         return None
-    raw_matches_data: list[dict[str, object]] = raw_matches_data_or_none
 
-    # Verificar que la temporada está completa (380 partidos jugados)
-    played_count = sum(1 for m in raw_matches_data if _has_score(m))
+    played_count = sum(1 for m in raw_matches if _has_score(m))
     if played_count < 380:
         logger.warning(
             "temporada %s incompleta en openfootball (%d/380 jugados), la salto",
@@ -167,15 +168,11 @@ def _backtest_season(
         )
         return None
 
-    # Construir equipos autocontenidos desde el JSON
-    teams = _extract_teams(raw_matches_data)
+    teams = _extract_teams(raw_matches)
     team_ids = [t.id for t in teams]
     team_by_openfootball: dict[str, Team] = {t.openfootball_name or t.id: t for t in teams}
+    all_matches = _parse_matches(raw_matches, team_by_openfootball, season)
 
-    # Parsear todos los partidos
-    all_matches = _parse_matches(raw_matches_data, team_by_openfootball, season)
-
-    # Jornada de corte y fecha de corte
     cutoff_gw = 38 - horizon
     cutoff_date = _cutoff_date(all_matches, cutoff_gw)
     if cutoff_date is None:
@@ -186,14 +183,14 @@ def _backtest_season(
         )
         return None
 
-    # Estado as-of: jugados = GW <= cutoff y con fecha <= cutoff_date
-    played_asof = [
-        m
-        for m in all_matches
-        if m.status is MatchStatus.PLAYED
-        and m.gameweek <= cutoff_gw
-        and (m.date is None or m.date <= cutoff_date)
-    ]
+    def _is_played_asof(m: Match) -> bool:
+        return (
+            m.status is MatchStatus.PLAYED
+            and m.gameweek <= cutoff_gw
+            and (m.date is None or m.date <= cutoff_date)
+        )
+
+    played_asof = [m for m in all_matches if _is_played_asof(m)]
     # Los partidos posteriores al corte se simulan: hay que BORRARLES el marcador real
     # (en una temporada ya terminada todos lo tienen) o `run_monte_carlo` los trataría
     # como fijados y reproduciría la tabla real → Brier = 0 espurio.
@@ -208,11 +205,7 @@ def _backtest_season(
             }
         )
         for m in all_matches
-        if not (
-            m.status is MatchStatus.PLAYED
-            and m.gameweek <= cutoff_gw
-            and (m.date is None or m.date <= cutoff_date)
-        )
+        if not _is_played_asof(m)
     ]
 
     # Anti-leakage: ningún partido jugado debe tener fecha > cutoff_date
@@ -232,81 +225,135 @@ def _backtest_season(
     try:
         xg_source = UnderstatXgSource(cache, client)
         xg_matches_all = xg_source.fetch_match_xg(season, teams, prefer_cache=True)
-        # Enriquecer solo los partidos jugados as-of con xG
         played_asof = _merge_xg(played_asof, xg_matches_all, cutoff_date)
     except UnderstatError as exc:
         logger.debug(
             "xG de Understat no disponible para %s: %s; el modelo usa solo goles", season, exc
         )
 
-    # Tabla base as-of
     base_table = build_table(team_ids, played_asof)
 
-    match_model = EloLogisticMatchModel(
-        home_advantage_elo=config.model.home_advantage_elo,
-        draw_base=config.model.draw_base,
-    )
-    sim_cfg = SimulationConfig(n_sims=n_sims, n_relegation=3, seed=seed)
-
-    # Simular con el modelo puro (alpha=1.0, sin deltas)
-    pure_model_cfg = ModelConfig(**{**config.model.model_dump(), "alpha": 1.0})
-    snapshots_pure = compute_strengths(
-        elo_base=elo,
-        played_matches=played_asof,
-        coach_changes={},
-        injury_adjustments={},
-        as_of=cutoff_date,
-        config=pure_model_cfg,
-    )
-    strengths_pure = effective_strengths(snapshots_pure)
-    probs_pure = run_monte_carlo(
-        team_ids, base_table, pending_asof, strengths_pure, match_model, sim_cfg
-    )
-
-    # Simular con el modelo ajustado (alpha de config, sin datos de entrenadores
-    # históricos porque no los tenemos para temporadas pasadas)
-    adj_model_cfg = ModelConfig(**{**config.model.model_dump(), "model_type": "adjusted"})
-    snapshots_adj = compute_strengths(
-        elo_base=elo,
-        played_matches=played_asof,
-        coach_changes={},
-        injury_adjustments={},
-        as_of=cutoff_date,
-        config=adj_model_cfg,
-    )
-    strengths_adj = effective_strengths(snapshots_adj)
-    probs_adj = run_monte_carlo(
-        team_ids, base_table, pending_asof, strengths_adj, match_model, sim_cfg
-    )
-
-    # Desenlace real: construir la tabla final y ver quién descendió (posiciones 18-20)
+    # Desenlace real: tabla final ordenada, los 3 últimos descienden
     final_table = order_table(build_table(team_ids, all_matches), all_matches)
     n = len(final_table)
-    relegated_real = {r.team for r in final_table[n - 3 :]}
+    relegated_real = frozenset(r.team for r in final_table[n - _RELEGATION_PLACES :])
 
-    # Acumular métricas por equipo
-    p_pure_map = {tp.team: tp.p_relegation for tp in probs_pure.teams}
-    p_adj_map = {tp.team: tp.p_relegation for tp in probs_adj.teams}
+    return PreparedSeason(
+        season=season,
+        teams=teams,
+        team_ids=team_ids,
+        base_table=base_table,
+        played_asof=played_asof,
+        pending_asof=pending_asof,
+        elo=elo,
+        cutoff_date=cutoff_date,
+        cutoff_gameweek=cutoff_gw,
+        relegated_real=relegated_real,
+    )
 
-    brier_pure: list[float] = []
-    brier_adj: list[float] = []
-    logloss_pure: list[float] = []
-    logloss_adj: list[float] = []
 
-    for team_id in team_ids:
-        y = 1.0 if team_id in relegated_real else 0.0
-        pp = p_pure_map.get(team_id, 0.0)
-        pa = p_adj_map.get(team_id, 0.0)
+# --------------------------------------------------------------------------- #
+# evaluación de un modelo sobre una temporada preparada
+# --------------------------------------------------------------------------- #
 
-        brier_pure.append((pp - y) ** 2)
-        brier_adj.append((pa - y) ** 2)
 
-        pp_c = max(_CLIP_MIN, min(_CLIP_MAX, pp))
-        pa_c = max(_CLIP_MIN, min(_CLIP_MAX, pa))
-        logloss_pure.append(-(y * math.log(pp_c) + (1.0 - y) * math.log(1.0 - pp_c)))
-        logloss_adj.append(-(y * math.log(pa_c) + (1.0 - y) * math.log(1.0 - pa_c)))
+def evaluate_season(
+    prepared: PreparedSeason,
+    model_cfg: ModelConfig,
+    n_sims: int,
+    seed: int,
+) -> dict[str, float]:
+    """P(descenso) por equipo con `model_cfg` sobre el estado as-of de `prepared`."""
+    match_model = make_match_model(model_cfg)
+    sim_cfg = SimulationConfig(n_sims=n_sims, n_relegation=_RELEGATION_PLACES, seed=seed)
+    snapshots = compute_strengths(
+        elo_base=prepared.elo,
+        played_matches=prepared.played_asof,
+        coach_changes={},
+        injury_adjustments={},
+        as_of=prepared.cutoff_date,
+        config=model_cfg,
+    )
+    strengths = effective_strengths(snapshots)
+    probs = run_monte_carlo(
+        prepared.team_ids,
+        prepared.base_table,
+        prepared.pending_asof,
+        strengths,
+        match_model,
+        sim_cfg,
+    )
+    return {tp.team: tp.p_relegation for tp in probs.teams}
 
-    return brier_pure, brier_adj, logloss_pure, logloss_adj
+
+def brier_logloss(
+    p_map: dict[str, float], prepared: PreparedSeason
+) -> tuple[list[float], list[float]]:
+    """Listas de Brier y log-loss por equipo de `prepared` dado el mapa de probabilidades."""
+    brier: list[float] = []
+    logloss: list[float] = []
+    for team_id in prepared.team_ids:
+        y = 1.0 if team_id in prepared.relegated_real else 0.0
+        p = p_map.get(team_id, 0.0)
+        brier.append((p - y) ** 2)
+        p_c = max(_CLIP_MIN, min(_CLIP_MAX, p))
+        logloss.append(-(y * math.log(p_c) + (1.0 - y) * math.log(1.0 - p_c)))
+    return brier, logloss
+
+
+# --------------------------------------------------------------------------- #
+# API pública del backtest
+# --------------------------------------------------------------------------- #
+
+
+def run_backtest(
+    seasons: list[int],
+    config: AppConfig,
+    horizon_gameweeks: int = 5,
+    n_sims: int = 20_000,
+    seed: int | None = None,
+    prepared: list[PreparedSeason] | None = None,
+) -> BacktestResult:
+    """Backtest histórico sin data leakage: Brier / log-loss del modelo puro vs el ajustado.
+
+    Si `prepared` se pasa, se reutiliza (evita re-descargar); si no, se construye con
+    `prepare_seasons`. Devuelve las medias agregadas sobre todos los (temporada, equipo).
+    """
+    if seed is None:
+        seed = BACKTEST_SEED
+    if prepared is None:
+        prepared = prepare_seasons(seasons, config, horizon_gameweeks)
+    if not prepared:
+        raise ValueError(
+            f"ninguna de las temporadas {seasons} está completa en openfootball "
+            f"(¿has corrido `descenso data refresh`?)"
+        )
+
+    p_cfg = pure_model_cfg(config)
+    a_cfg = adjusted_model_cfg(config)
+
+    brier_pure_vals: list[float] = []
+    brier_adj_vals: list[float] = []
+    logloss_pure_vals: list[float] = []
+    logloss_adj_vals: list[float] = []
+
+    for ps in prepared:
+        bp, lp = brier_logloss(evaluate_season(ps, p_cfg, n_sims, seed), ps)
+        ba, la = brier_logloss(evaluate_season(ps, a_cfg, n_sims, seed), ps)
+        brier_pure_vals.extend(bp)
+        logloss_pure_vals.extend(lp)
+        brier_adj_vals.extend(ba)
+        logloss_adj_vals.extend(la)
+
+    return BacktestResult(
+        seasons=[ps.season for ps in prepared],
+        horizon_gameweeks=horizon_gameweeks,
+        n_sims=n_sims,
+        brier_pure=_mean(brier_pure_vals),
+        brier_adjusted=_mean(brier_adj_vals),
+        logloss_pure=_mean(logloss_pure_vals),
+        logloss_adjusted=_mean(logloss_adj_vals),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -323,11 +370,9 @@ def _load_raw_matches(
 ) -> list[dict[str, object]] | None:
     """Devuelve la lista raw de matches del JSON de openfootball.
 
-    Cachea en Parquet para no re-descargar. Si el cache existe, lo lee.
-    Si falla la red, devuelve None.
+    Cachea en un fichero JSON (no Parquet: los dicts anidados no van bien en Parquet).
+    Si el cache existe, lo lee. Si falla la red, devuelve None.
     """
-    # Cache en Parquet: columnas planas (no anidadas). Guardamos el JSON crudo
-    # en un fichero separado para evitar serializar dicts anidados en Parquet.
     json_cache_path = cache.cache_dir / f"{cache_name}.json"
     if json_cache_path.exists():
         try:
@@ -498,8 +543,6 @@ def _fetch_elo_table(
     Verifica que cada fila cumpla `From <= on_date <= To` (clubelo devuelve
     rangos de validez).
     """
-    import io
-
     cache_name = f"backtest_clubelo_{on_date.isoformat()}"
     clubelo_url = f"http://api.clubelo.com/{on_date.isoformat()}"
 

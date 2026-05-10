@@ -35,6 +35,26 @@ class ModelConfig(BaseModel):
     draw_base: float = Field(
         0.26, description="probabilidad base de empate (suelo) en el modelo logístico"
     )
+    match_model: str = Field(
+        "elo_logistic",
+        description="'elo_logistic' (CP1: W/D/L logístico + margen muestreado) o "
+        "'dixon_coles' (CP3: Poisson bivariada con corrección de Dixon-Coles)",
+    )
+    goals_avg: float = Field(
+        1.35,
+        description="goles por equipo y partido de referencia (≈ media de LaLiga); base del "
+        "modelo Dixon-Coles",
+    )
+    elo_to_goals_scale: float = Field(
+        400.0,
+        description="puntos Elo por e-fold de los goles esperados en el modelo Dixon-Coles "
+        "(más bajo = la diferencia de Elo pesa más en el marcador)",
+    )
+    dixon_coles_rho: float = Field(
+        -0.1,
+        description="parámetro rho de la corrección de Dixon-Coles para marcadores bajos "
+        "(negativo = más 0-0 y 1-1, menos 1-0 y 0-1, como en LaLiga)",
+    )
     coach_bump_default: float = Field(
         25.0, description="bonus Elo inicial tras un cambio de entrenador"
     )
@@ -54,11 +74,27 @@ class ModelConfig(BaseModel):
             raise ValueError(f"debe estar en [0, 1], es {v}")
         return v
 
-    @field_validator("form_half_life_days", "form_goal_diff_scale")
+    @field_validator(
+        "form_half_life_days", "form_goal_diff_scale", "goals_avg", "elo_to_goals_scale"
+    )
     @classmethod
     def _positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError(f"debe ser > 0, es {v}")
+        return v
+
+    @field_validator("dixon_coles_rho")
+    @classmethod
+    def _rho_range(cls, v: float) -> float:
+        if not -0.2 <= v <= 0.2:
+            raise ValueError(f"dixon_coles_rho debe estar en [-0.2, 0.2], es {v}")
+        return v
+
+    @field_validator("match_model")
+    @classmethod
+    def _known_match_model(cls, v: str) -> str:
+        if v not in {"elo_logistic", "dixon_coles"}:
+            raise ValueError(f"match_model desconocido: {v!r}")
         return v
 
     @field_validator("form_window_matches", "coach_bump_decay_matches")

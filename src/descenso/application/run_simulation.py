@@ -25,7 +25,7 @@ from descenso.application.build_strengths import (
 )
 from descenso.config import AppConfig
 from descenso.domain.match import Match, MatchStatus
-from descenso.domain.match_model import EloLogisticMatchModel
+from descenso.domain.match_model import make_match_model
 from descenso.domain.probabilities import RelegationProbabilities
 from descenso.domain.simulator import SimulationConfig, run_monte_carlo
 from descenso.domain.standings import build_table
@@ -144,10 +144,9 @@ def run_simulation(
         # modelo "pure": fuerza efectiva = Elo de clubelo (equivalente a alpha=1.0)
         strengths = dict(elo)
 
-    match_model = EloLogisticMatchModel(
-        home_advantage_elo=config.model.home_advantage_elo,
-        draw_base=config.model.draw_base,
-    )
+    if config.model.match_model == "dixon_coles":
+        notes.append("match model: Poisson bivariada + Dixon-Coles")
+    match_model = make_match_model(config.model)
     sim_config = SimulationConfig(
         n_sims=n_sims if n_sims is not None else config.model.n_sims,
         n_relegation=config.model.n_relegation,

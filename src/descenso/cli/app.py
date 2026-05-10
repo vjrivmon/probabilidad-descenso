@@ -4,9 +4,10 @@ Subcomandos:
     descenso data refresh   Descarga/actualiza Elo (clubelo) y calendario (openfootball) al cache.
     descenso data show      Muestra qué hay en el cache y de qué fecha.
     descenso simulate       Interactivo: pide goles de cada partido pendiente (Enter = simular).
-    descenso report         Imprime el ranking de la última simulación en formato tweet.
-    descenso compare        Tabla modelo puro vs ajustado + Δ + nota.   (CP2)
+    descenso report         Ranking de la última simulación en formato tweet (--html: informe).
+    descenso compare        Tabla modelo puro vs ajustado + delta + nota.   (CP2)
     descenso backtest       Brier / log-loss puro vs ajustado sobre temporadas pasadas.  (CP2)
+    descenso calibrate      Autocalibra alpha / form_half_life_days / form_k_factor (CP3).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import unicodedata
+from pathlib import Path
 from typing import NoReturn
 
 import typer
@@ -30,7 +32,10 @@ from descenso.adapters.data.schedule import OpenFootballScheduleSource, Schedule
 from descenso.adapters.data.team_aliases import TeamAliasError, load_teams
 from descenso.adapters.data.understat_xg import UnderstatError, UnderstatXgSource
 from descenso.application.backtest import run_backtest
+from descenso.application.calibrate import calibrate as run_calibration
+from descenso.application.calibrate import suggest_config_yaml
 from descenso.application.compare_models import compare_models
+from descenso.application.export_html import export_html_report
 from descenso.application.run_simulation import (
     FixedResult,
     SimulationOutcome,
@@ -224,12 +229,15 @@ def report(
     top: int = typer.Option(
         0, help="mostrar solo los N equipos con más probabilidad (0 = todos los candidatos)"
     ),
+    html: str = typer.Option(
+        None, "--html", metavar="RUTA", help="además, escribir un informe HTML estático en RUTA"
+    ),
 ) -> None:
-    """Imprime el ranking de la última simulación en formato tweet."""
+    """Imprime el ranking de la última simulación en formato tweet (y, con --html, un informe)."""
     _setup_logging()
     config = _config()
-    last = load_last_run(config.paths.cache_dir)
-    if last is None:
+    data = load_last_run(config.paths.cache_dir)
+    if data is None:
         err_console.print(
             "[yellow]no hay ninguna simulación previa; corro una con los defaults…[/]"
         )
@@ -239,20 +247,19 @@ def report(
         except (ClubeloError, ScheduleError, TeamAliasError, FileNotFoundError) as exc:
             _die(f"{exc}\n(corre `descenso data refresh` con conexión primero)")
         save_last_run(outcome, config.paths.cache_dir)
-        ranked = [(tp.team, tp.p_relegation) for tp in outcome.probabilities.ranked()]
-        names = outcome.team_names
-        header = _header_line(outcome.season, outcome.n_played, outcome.n_pending)
-        applied = [(f.home_team, f.away_team) for f in outcome.applied_fixed]
-    else:
-        names = {str(k): str(v) for k, v in last.get("team_names", {}).items()}
-        ranked = [(t["team"], float(t["p_relegation"])) for t in last.get("teams", [])]
-        ranked.sort(key=lambda x: x[1], reverse=True)
-        header = _header_line(
-            int(last.get("season", config.season)),
-            int(last.get("n_played", 0)),
-            int(last.get("n_pending", 0)),
-        )
-        applied = [(fx[0], fx[2]) for fx in last.get("applied_fixed", [])]
+        data = load_last_run(config.paths.cache_dir)
+        if data is None:  # no debería pasar: acabamos de guardarlo
+            _die("no pude releer la simulación recién guardada.")
+
+    names = {str(k): str(v) for k, v in data.get("team_names", {}).items()}
+    ranked = [(str(t["team"]), float(t["p_relegation"])) for t in data.get("teams", [])]
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    header = _header_line(
+        int(data.get("season", config.season)),
+        int(data.get("n_played", 0)),
+        int(data.get("n_pending", 0)),
+    )
+    applied = [(str(fx[0]), str(fx[2])) for fx in data.get("applied_fixed", []) if len(fx) == 4]
 
     block = _ranking_block(ranked, names, applied, top=top, header=header)
     typer.echo(block)
@@ -263,6 +270,12 @@ def report(
             err_console.print(
                 "[yellow]no pude copiar al portapapeles (¿sin xclip/wl-copy?); cópialo a mano.[/]"
             )
+    if html:
+        try:
+            path = export_html_report(data, Path(html))
+        except OSError as exc:
+            _die(f"no pude escribir el informe HTML en {html}: {exc}")
+        console.print(f"[dim]informe HTML escrito en {path}[/]")
 
 
 # --------------------------------------------------------------------------- #
@@ -411,6 +424,101 @@ def backtest(
         )
     else:
         console.print("\nel modelo ajustado no produce diferencia apreciable en Brier.")
+
+
+@app.command()
+def calibrate(
+    seasons: str = typer.Option(
+        "2022,2023,2024", help="temporadas (año de inicio) separadas por comas"
+    ),
+    horizon: int = typer.Option(8, help="jornadas antes del final desde las que predecir"),
+    sims: int = typer.Option(
+        10_000, help="simulaciones por evaluación (más = objetivo más suave, pero más lento)"
+    ),
+    max_iter: int = typer.Option(80, help="iteraciones máximas del optimizador (Nelder-Mead)"),
+) -> None:
+    """Autocalibra alpha / form_half_life_days / form_k_factor minimizando el Brier del backtest."""
+    _setup_logging()
+    config = _config()
+
+    try:
+        season_list = [int(s.strip()) for s in seasons.split(",") if s.strip()]
+    except ValueError as exc:
+        _die(f"--seasons debe ser una lista de años separados por comas: {exc}")
+    if not season_list:
+        _die("--seasons está vacío.")
+    if sims < 1000:
+        err_console.print(
+            f"[yellow]aviso:[/] {sims} sims es poco para calibrar; el objetivo tendrá escalones."
+        )
+
+    console.print(
+        f"\n[bold]Autocalibración[/] — temporadas {season_list} · horizonte {horizon} jornadas · "
+        f"{sims} sims/eval"
+    )
+    console.print(
+        "[dim](descargando datos; cada evaluación es una pasada Monte Carlo por temporada)[/]\n"
+    )
+
+    with console.status("calibrando…"):
+        try:
+            result = run_calibration(
+                season_list,
+                config,
+                horizon_gameweeks=horizon,
+                n_sims=sims,
+                max_iter=max_iter,
+            )
+        except ValueError as exc:
+            _die(str(exc))
+        except Exception as exc:
+            _die(f"error en la calibración: {exc}")
+
+    from rich.table import Table
+
+    pt = Table(show_header=True, header_style="bold", title="Parámetros")
+    pt.add_column("Parámetro", min_width=22)
+    pt.add_column("Config actual", justify="right")
+    pt.add_column("Calibrado", justify="right")
+    for k in ("alpha", "form_half_life_days", "form_k_factor"):
+        ini = result.initial_params[k]
+        best = result.best_params[k]
+        changed = abs(best - ini) > 1e-6
+        best_str = f"[green]{best:.3f}[/]" if changed else f"{best:.3f}"
+        pt.add_row(k, f"{ini:.3f}", best_str)
+    console.print(pt)
+
+    mt = Table(show_header=True, header_style="bold", title="Brier / log-loss (medios)")
+    mt.add_column("Modelo", min_width=22)
+    mt.add_column("Brier", justify="right")
+    mt.add_column("Log-loss", justify="right")
+    mt.add_row("puro (alpha=1)", f"{result.brier_pure:.4f}", f"{result.logloss_pure:.4f}")
+    mt.add_row("ajustado (config)", f"{result.brier_initial:.4f}", f"{result.logloss_initial:.4f}")
+    mt.add_row("ajustado (calibrado)", f"{result.brier_best:.4f}", f"{result.logloss_best:.4f}")
+    console.print(mt)
+
+    convergencia = "convergió" if result.converged else "no convergió (tope de iteraciones)"
+    console.print(
+        f"\nTemporadas usadas: {result.seasons} · {result.n_evaluations} evaluaciones · "
+        f"{convergencia}"
+    )
+
+    imp_ini = result.improvement_over_initial * 100
+    imp_pure = result.improvement_over_pure * 100
+    if imp_ini > 0.01:
+        console.print(
+            f"el modelo calibrado mejora el Brier un [green]{imp_ini:.1f}%[/] frente a config "
+            f"(y un {imp_pure:+.1f}% frente al puro)."
+        )
+        console.print("\n[dim]-- pega esto en config.yaml si te convence --[/]")
+        typer.echo(suggest_config_yaml(result))
+    else:
+        console.print(
+            "[yellow]la calibración no encontró parámetros mejores que los de config.yaml.[/]"
+        )
+    console.print(
+        "[dim](esto NO ha tocado config.yaml; con tan pocas temporadas, ojo al sobreajuste)[/]"
+    )
 
 
 # --------------------------------------------------------------------------- #

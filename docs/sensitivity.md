@@ -80,9 +80,37 @@ demasiado conservador.
 4. **No se alcanza el +5% del SPEC** con estos datos. Es esperable sin la
    corrección por xG (que descuenta la suerte partido a partido). Cuando
    Understat (o una fuente equivalente de xG) vuelva a ser accesible, el modelo
-   lo incorpora solo (`xg_blend_beta`) y este análisis debería repetirse. La
-   autocalibración de `alpha`/`half_life`/`K` minimizando el Brier del backtest
-   queda como tarea del CP3.
+   lo incorpora solo (`xg_blend_beta`) y este análisis debería repetirse.
+
+## Autocalibración (`descenso calibrate`, CP3)
+
+`descenso calibrate --seasons 2022,2023 --horizon 8` busca los `alpha`,
+`form_half_life_days` y `form_k_factor` que minimizan el Brier medio del modelo
+ajustado en el backtest, con `scipy.optimize.minimize` (Nelder-Mead con bounds, en
+coordenadas normalizadas) y una **seed fija** para que el objetivo sea
+determinista. El estado as-of de cada temporada se prepara una sola vez
+(`PreparedSeason`) y se reutiliza en cada evaluación, así que cada paso del
+optimizador es solo una pasada Monte Carlo por temporada.
+
+Devuelve los parámetros óptimos, las métricas antes/después (puro / config /
+calibrado) y un fragmento de YAML listo para pegar en `config.yaml` — **no** lo
+escribe por ti. Aviso: con solo 2-3 temporadas completas en openfootball el óptimo
+del backtest puede estar sobreajustado (tiende a `half_life` corto y `K` alto, que
+dan mucho peso a las últimas jornadas); trátalo como punto de partida, no como la
+verdad. Si la calibración no encuentra nada mejor que el `config.yaml` actual,
+devuelve los parámetros de config sin cambios.
+
+## Modelo de marcador Dixon-Coles (CP3)
+
+El barrido de arriba usa el modelo de marcador del CP1 (`elo_logistic`: W/D/L
+logístico + margen muestreado). Con `model.match_model: dixon_coles` los goles de
+cada equipo se muestrean de dos Poisson independientes con la corrección de
+Dixon-Coles (`goals_avg`, `elo_to_goals_scale`, `dixon_coles_rho`) — marcadores
+más realistas y mejor fidelidad al desempate por diferencia de goles. El efecto
+sobre P(descenso) suele ser pequeño (las posiciones dependen sobre todo del W/D/L,
+que ambos modelos reproducen de forma comparable); este modelo es más "suave" que
+el logístico: no llega a probabilidades tan extremas para diferencias de Elo
+moderadas. Repetir el barrido con `dixon_coles` queda pendiente.
 
 ## Estabilidad (varianza jornada-a-jornada)
 
