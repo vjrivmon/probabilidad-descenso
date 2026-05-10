@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "descenso"
+version = "0.1.0"
+description = "Probabilidad de descenso en LaLiga con memoria de forma (Elo + xG + tendencia + entrenadores)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Vicente Rivas Monferrer" }]
+keywords = ["laliga", "football", "relegation", "monte-carlo", "elo", "xg"]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "httpx>=0.27",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "pyarrow>=16.0",       # parquet engine for the local cache
+    "beautifulsoup4>=4.12", # parsing FBref / Understat HTML
+    "lxml>=5.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "black>=24.4",
+    "mypy>=1.10",
+    "types-PyYAML",
+    "respx>=0.21",          # mock httpx in tests
+]
+
+[project.scripts]
+descenso = "descenso.cli.app:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/descenso"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = ["B008"]  # typer uses function calls in argument defaults
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["src/descenso"]
+omit = ["src/descenso/cli/*", "src/descenso/application/scrape_replies.py"]

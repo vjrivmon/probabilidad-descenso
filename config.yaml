@@ -1,0 +1,30 @@
+# Configuración de `descenso`. Todos los parámetros del modelo viven aquí —
+# edítalos y vuelve a correr `descenso simulate` / `descenso compare`.
+# (Este fichero NO contiene secretos; el repositorio es público.)
+
+season: 2025          # año de inicio de la temporada en curso (2025 = LaLiga 2025-26)
+
+model:
+  # --- blend Elo / forma ---
+  alpha: 0.5                  # peso del Elo base de clubelo frente al FormRating. 1.0 = modelo "puro" (≈ @LaLigaenDirecto)
+  form_half_life_days: 75.0   # vida media del decaimiento temporal: ~3 meses pesan, el inicio de temporada casi no
+  form_window_matches: 15     # máximo de partidos recientes que entran en el cálculo de forma
+  xg_blend_beta: 0.6          # en el "rendimiento por partido": peso de los goles reales (0.6) vs los esperados xG (0.4)
+
+  # --- partido ---
+  home_advantage_elo: 65.0    # ventaja de campo, en puntos Elo
+  draw_base: 0.26             # suelo de probabilidad de empate (los empates en LaLiga rondan el 25 %)
+
+  # --- eventos discretos ---
+  coach_bump_default: 25.0    # bonus Elo inicial tras un cambio de entrenador (efecto rebote)
+  coach_bump_decay_matches: 6 # nº de partidos en los que ese bonus decae linealmente a 0
+
+  # --- simulación ---
+  n_sims: 100000              # simulaciones Monte Carlo por defecto
+  n_relegation: 3             # plazas de descenso en LaLiga
+  model_type: adjusted        # 'pure' (solo Elo) o 'adjusted' (Elo + forma + xG + entrenadores + bajas)
+
+paths:
+  cache_dir: data/cache
+  coach_changes_file: data/coach_changes.yaml
+  team_aliases_file: data/team_aliases.yaml

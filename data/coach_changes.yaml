@@ -1,0 +1,24 @@
+# Cambios de entrenador y ajustes por bajas de la temporada en curso.
+# Esta es la pieza "humana" del modelo: rellénala con datos VERIFICABLES (fechas
+# públicas de ceses, bajas confirmadas). Las contribuciones aquí son bienvenidas.
+#
+# - `coach_changes`: tras la fecha indicada, el equipo recibe un bonus Elo
+#   (`elo_bump`, o `model.coach_bump_default` si se omite) que decae a 0 en
+#   `model.coach_bump_decay_matches` partidos (efecto rebote del cambio de banquillo).
+# - `injuries`: ajuste manual (normalmente negativo) a partir de `as_of` por la
+#   baja de jugador(es) clave.
+
+coach_changes: []
+  # Ejemplo (rellenar con datos reales de 2025-26):
+  # - team: real-oviedo
+  #   date: 2026-02-15
+  #   new_coach: "Nombre del nuevo entrenador"
+  #   elo_bump: 25
+  #   notes: "destitución tras 5 derrotas seguidas"
+
+injuries: []
+  # Ejemplo:
+  # - team: levante
+  #   as_of: 2026-05-01
+  #   elo_delta: -20
+  #   notes: "baja por lesión del delantero titular"
