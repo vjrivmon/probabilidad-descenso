@@ -1,33 +1,4 @@
-#!/usr/bin/env python3
-"""Script de UN SOLO USO (checkpoint 0): resumir qué factores pide la afición en los
-replies a @LaLigaenDirecto. NO es parte del producto.
-
-Uso:
-    python scripts/scrape_replies.py                     # lee data/replies.txt
-    python scripts/scrape_replies.py --file otro.txt
-    python scripts/scrape_replies.py --out docs/community-factors.md
-
-`data/replies.txt` se genera con `scripts/scrape_x_browser.py` (toma el control de un
-Chrome ya logueado vía CDP) o, si eso falla, pegando los replies a mano (un reply por
-bloque, con o sin la cabecera `[@usuario]`).
-
-Salida: imprime el conteo de menciones por categoría de factor y (re)escribe
-`docs/community-factors.md` con la tabla y la lectura cualitativa.
-"""
-
-from __future__ import annotations
-
-import argparse
-import datetime as dt
-import sys
-from pathlib import Path
-
-# Permite ejecutar el script sin instalar el paquete.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from descenso.application.scrape_replies import summarize_factors
-
-_PREAMBLE = """# Factores que pide la afición — análisis de los replies de @LaLigaenDirecto (CP0)
+# Factores que pide la afición — análisis de los replies de @LaLigaenDirecto (CP0)
 
 > Resultado del **checkpoint 0** del proyecto: recopilar los tweets de
 > [@LaLigaenDirecto](https://x.com/LaLigaenDirecto) y los replies/menciones dirigidos a
@@ -48,9 +19,23 @@ _PREAMBLE = """# Factores que pide la afición — análisis de los replies de @
   categoría de factor (`descenso.application.scrape_replies.KEYWORDS`). Es un conteo
   cualitativo grosero: hay falsos positivos y negativos; sirve como señal de demanda
   relativa, no como métrica exacta.
-"""
 
-_LECTURA = """
+
+## Conteo de menciones
+
+| Categoría | Menciones (proxy) |
+|---|---:|
+| calendario / dificultad del run-in | 31 |
+| explicabilidad (cómo funciona / qué tiene en cuenta) | 26 |
+| frecuencia de actualización | 24 |
+| forma / racha / momento | 20 |
+| cambio de entrenador | 14 |
+| xg / merecimiento / suerte | 9 |
+| moral / ánimo / presión / afición | 9 |
+| mercado / fichajes / refuerzos | 4 |
+| objetivos / motivación (ya salvado, sin nada en juego) | 4 |
+| lesiones / bajas / sanciones | 1 |
+
 ## Lectura
 
 1. **Lo que más se repite NO es "añade tal factor", sino una mezcla de
@@ -94,55 +79,7 @@ _LECTURA = """
 6. **Mucho ruido irrelevante:** buena parte de los replies son piques entre
    aficiones, quejas arbitrales y la lucha por Champions/Europa — nada que ver con
    factores del modelo de descenso. Es esperable en una cuenta grande.
-"""
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Resumen de factores pedidos en los replies de @LaLigaenDirecto"
-    )
-    parser.add_argument(
-        "--file", type=Path, default=Path("data/replies.txt"), help="fichero con los replies"
-    )
-    parser.add_argument(
-        "--out", type=Path, default=Path("docs/community-factors.md"), help="markdown de salida"
-    )
-    args = parser.parse_args()
-
-    try:
-        counts = summarize_factors(args.file)
-    except FileNotFoundError:
-        print(
-            f"no encuentro {args.file}. Genera los replies con "
-            f"`python scripts/scrape_x_browser.py` (necesita un Chrome logueado con "
-            f"--remote-debugging-port=9222) o pégalos a mano en ese fichero.",
-            file=sys.stderr,
-        )
-        return 1
-
-    ranked = counts.most_common()
-    print("Menciones por categoría de factor (sobre la sección de replies):")
-    for category, n in ranked:
-        print(f"  {n:5d}  {category}")
-
-    lines = [
-        _PREAMBLE,
-        "\n## Conteo de menciones\n",
-        "| Categoría | Menciones (proxy) |",
-        "|---|---:|",
-    ]
-    for category, n in ranked:
-        lines.append(f"| {category} | {n} |")
-    lines.append(_LECTURA)
-    lines.append(
-        f"\n---\n_Generado por `scripts/scrape_replies.py` a partir de `{args.file}` "
-        f"el {dt.date.today().isoformat()}._\n"
-    )
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text("\n".join(lines), encoding="utf-8")
-    print(f"\nescrito {args.out}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+---
+_Generado por `scripts/scrape_replies.py` a partir de `data/replies.txt` el 2026-05-10._
