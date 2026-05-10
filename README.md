@@ -31,10 +31,10 @@ Con `α = 1` y sin ajustes recuperas el **modelo "puro"** (solo Elo), que sirve 
 Plan por checkpoints (cada uno usable):
 
 - **CP1 — MVP (funcionando):** `data refresh` (Elo de clubelo + calendario de [openfootball](https://github.com/openfootball/football.json)), dominio + simulador Monte Carlo vectorizado, `simulate` / `report` con el modelo puro (reproduce el enfoque de @LaLigaenDirecto). 100 000 simulaciones en ~1 s.
-- **CP2 — el diferencial:** xG de Understat + `StrengthModel` (forma + entrenadores + bajas) + `compare` + `backtest`.
-- **CP3 — refinamientos (opcional):** marcadores con Poisson bivariada + Dixon-Coles, autocalibración de α/half-life, feature experimental de sentimiento (NLP), export HTML.
+- **CP2 — el diferencial (funcionando):** `StrengthModel` con memoria de forma (rendimiento reciente ponderado exp. vs. Elo + decaimiento + bumps de entrenador / bajas de `coach_changes.yaml`), cableado en `simulate`; `compare` (puro vs. ajustado, equipo a equipo) y `backtest` (Brier / log-loss sobre temporadas pasadas, sin data leakage). La parte de **xG de Understat** está implementada pero hoy *inactiva* (ver nota); el análisis de sensibilidad de los parámetros está en [`docs/sensitivity.md`](docs/sensitivity.md).
+- **CP3 — refinamientos (opcional):** marcadores con Poisson bivariada + Dixon-Coles, autocalibración de α/half-life/K, feature experimental de sentimiento (NLP), export HTML.
 
-> Nota sobre las fuentes: FBref era la fuente prevista para el calendario, pero está detrás de Cloudflare y no es scrapeable; el calendario sale de `openfootball/football.json` (repo público, sin clave). El Elo viene de la API CSV de clubelo.com. `descenso compare` / `descenso backtest` avisan de que llegan en el CP2.
+> Nota sobre las fuentes: FBref está detrás de Cloudflare y no es scrapeable → el calendario sale de `openfootball/football.json` (repo público, sin clave). El Elo viene de la API CSV de clubelo.com (endpoint de fecha). **Understat** ha dejado de servir a clientes no-navegador el bloque de datos embebido con el xG: `descenso data refresh` lo intenta y, si falla, sigue sin xG avisándolo; el modelo degrada solo a "solo goles reales". Si vuelve a ser accesible (o aparece otra fuente de xG), el modelo lo incorpora sin más cambios.
 
 ## Stack
 
@@ -51,7 +51,7 @@ python3 -m venv .venv && source .venv/bin/activate
 # 2. Instalar (modo editable, con dependencias de desarrollo)
 pip install -e ".[dev]"
 
-# 3. Comandos (compare/backtest llegan en el CP2; ver "Estado")
+# 3. Comandos
 descenso --help
 descenso data refresh                       # descarga Elo + calendario al cache local
 descenso data show                          # qué hay en el cache y de qué fecha
@@ -60,6 +60,8 @@ descenso simulate --no-interactive --sims 100000 --seed 1
 descenso simulate --fix "Levante 3-2 Osasuna" --fix "Oviedo 0-0 Getafe"
 descenso report --copy                      # reimprime el último ranking y lo copia al portapapeles
 descenso report --top 6
+descenso compare --sims 50000 --seed 1      # modelo puro vs. ajustado, equipo a equipo, con la nota del factor responsable
+descenso backtest --seasons 2022,2023 --horizon 8   # Brier / log-loss puro vs. ajustado sobre temporadas pasadas
 ```
 
 Toda la configuración del modelo (α, vida media de la forma, ventaja de campo, bonus por cambio de entrenador, nº de simulaciones...) está en [`config.yaml`](config.yaml). Los cambios de entrenador y las bajas, en [`data/coach_changes.yaml`](data/coach_changes.yaml).

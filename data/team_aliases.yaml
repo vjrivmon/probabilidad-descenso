@@ -11,6 +11,10 @@
 #
 # Plantel de LaLiga 2025-26 (20 equipos). clubelo_name y openfootball_name están
 # verificados contra las respuestas reales de cada fuente (2026-05-10).
+# understat_name: SIN VERIFICAR — Understat no es scrapeable con clientes
+# no-navegador desde 2025-26 (devuelve HTML recortado sin los bloques JSON).
+# Estos nombres se ajustarán cuando Understat vuelva a ser accesible.
+# Fuente de referencia para los nombres: https://understat.com/league/La_liga
 
 - id: barcelona
   name: FC Barcelona

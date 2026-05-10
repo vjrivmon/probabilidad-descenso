@@ -73,11 +73,7 @@ omit = [
     "src/descenso/cli/*",
     # Script de uso único (CP0)
     "src/descenso/application/scrape_replies.py",
-    # Stubs del CP2/CP3: entran en cobertura cuando se implementen
-    "src/descenso/domain/strength_model.py",
-    "src/descenso/application/backtest.py",
-    "src/descenso/application/build_strengths.py",
-    "src/descenso/application/compare_models.py",
-    "src/descenso/adapters/data/understat_xg.py",
-    "src/descenso/adapters/data/coach_changes_file.py",
+    # CP2 ya implementado y testeado — ya no se omite:
+    # strength_model, backtest, build_strengths, compare_models,
+    # understat_xg, coach_changes_file
 ]

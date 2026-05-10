@@ -28,6 +28,9 @@ from descenso.adapters.data.clubelo_elo import CACHE_NAME as ELO_CACHE_NAME
 from descenso.adapters.data.clubelo_elo import ClubeloEloSource, ClubeloError
 from descenso.adapters.data.schedule import OpenFootballScheduleSource, ScheduleError, season_slug
 from descenso.adapters.data.team_aliases import TeamAliasError, load_teams
+from descenso.adapters.data.understat_xg import UnderstatError, UnderstatXgSource
+from descenso.application.backtest import run_backtest
+from descenso.application.compare_models import compare_models
 from descenso.application.run_simulation import (
     FixedResult,
     SimulationOutcome,
@@ -108,6 +111,19 @@ def data_refresh() -> None:
     console.print(
         f"Calendario {slug}: {len(matches)} partidos ({played} jugados, {pending} pendientes)."
     )
+
+    with console.status("intentando descargar xG de understat.com…"):
+        try:
+            xg_matches = UnderstatXgSource(cache).fetch_match_xg(
+                config.season, teams, prefer_cache=False
+            )
+            console.print(f"xG (understat.com): {len(xg_matches)} partidos con xG.")
+        except UnderstatError as exc:
+            err_console.print(
+                f"[yellow]aviso:[/] no se pudo descargar xG de Understat: {exc}\n"
+                f"  (el modelo funciona sin xG; se usaran solo goles reales)"
+            )
+
     console.print(f"Cache: {config.paths.cache_dir.resolve()}")
 
 
@@ -117,9 +133,11 @@ def data_show() -> None:
     _setup_logging()
     config = _config()
     cache = ParquetCache(config.paths.cache_dir)
+    xg_cache_name = f"understat_xg_{config.season}"
     entries = [
         (ELO_CACHE_NAME, "Elo (clubelo.com)"),
         (f"schedule_{config.season}", f"Calendario {season_slug(config.season)}"),
+        (xg_cache_name, f"xG Understat {season_slug(config.season)}"),
     ]
     any_found = False
     for name, label in entries:
@@ -256,11 +274,60 @@ def compare(
     seed: int = typer.Option(None, help="semilla para reproducibilidad"),
 ) -> None:
     """Compara el modelo puro (solo Elo) con el ajustado (Elo + forma + xG + entrenadores)."""
-    err_console.print(
-        "[yellow]`compare` llega en el CP2 (necesita el modelo ajustado: forma + xG + "
-        "entrenadores). Por ahora solo está el modelo puro — usa `descenso simulate`.[/]"
+    _setup_logging()
+    config = _config()
+    if sims < 1:
+        _die(f"--sims debe ser >= 1 (es {sims}).")
+
+    with console.status("cargando datos y calculando fuerzas…"):
+        try:
+            rows = compare_models(config, n_sims=sims, seed=seed)
+        except Exception as exc:
+            _die(str(exc))
+
+    if not rows:
+        _die("no se obtuvieron filas de comparación.")
+
+    # `compare_models` ya cargó los equipos (vía `load_inputs`) sin error, así que
+    # `load_teams` aquí no debería fallar; si falla, que propague a `_die` arriba.
+    names = {t.id: t.name for t in load_teams(config.paths.team_aliases_file)}
+
+    # Cabecera
+    slug = season_slug(config.season)
+    console.print(f"\n[bold]Comparacion de modelos — LaLiga {slug}[/]")
+    console.print(
+        f"[dim]{sims} simulaciones · seed {seed} · "
+        f"modelo puro (alpha=1.0) vs ajustado (alpha={config.model.alpha})[/]"
     )
-    raise typer.Exit(1)
+
+    # Tabla Rich
+    from rich.table import Table
+
+    tabla = Table(show_header=True, header_style="bold")
+    tabla.add_column("Equipo", style="", min_width=20)
+    tabla.add_column("Puro (%)", justify="right")
+    tabla.add_column("Ajustado (%)", justify="right")
+    tabla.add_column("Δ (pp)", justify="right")
+    tabla.add_column("Nota", style="dim")
+
+    for row in rows:
+        delta_str = f"{row.delta:+.2f}"
+        delta_style = "green" if row.delta < 0 else ("red" if row.delta > 0 else "")
+        tabla.add_row(
+            names.get(row.team, row.team),
+            f"{row.p_pure * 100:.2f}",
+            f"{row.p_adjusted * 100:.2f}",
+            f"[{delta_style}]{delta_str}[/{delta_style}]" if delta_style else delta_str,
+            row.note,
+        )
+
+    console.print(tabla)
+
+    # Ranking del modelo ajustado en texto plano (copiable)
+    console.print("\n[dim]-- Ranking ajustado (copiable) --[/]")
+    ranked = [(r.team, r.p_adjusted) for r in rows]
+    header = _header_line(config.season, 0, 0)
+    typer.echo(_ranking_block(ranked, names, [], top=0, header=header))
 
 
 @app.command()
@@ -270,13 +337,80 @@ def backtest(
     ),
     horizon: int = typer.Option(5, help="jornadas antes del final desde las que predecir"),
     sims: int = typer.Option(20_000, help="simulaciones por predicción"),
+    seed: int = typer.Option(None, help="semilla para reproducibilidad (default: 42)"),
 ) -> None:
     """Backtest histórico: Brier / log-loss del modelo puro vs el ajustado."""
-    err_console.print(
-        "[yellow]`backtest` llega en el CP2 (compara el modelo ajustado contra el puro sobre "
-        "temporadas pasadas).[/]"
+    _setup_logging()
+    config = _config()
+
+    # Parsear la lista de temporadas
+    try:
+        season_list = [int(s.strip()) for s in seasons.split(",") if s.strip()]
+    except ValueError as exc:
+        _die(f"--seasons debe ser una lista de años separados por comas: {exc}")
+    if not season_list:
+        _die("--seasons está vacío.")
+
+    console.print(
+        f"\n[bold]Backtest historico[/] — temporadas: {season_list} · "
+        f"horizonte: {horizon} jornadas · {sims} simulaciones"
     )
-    raise typer.Exit(1)
+    console.print("[dim](descargando datos, puede tardar unos minutos la primera vez)[/]\n")
+
+    with console.status("corriendo el backtest…"):
+        try:
+            result = run_backtest(
+                seasons=season_list,
+                config=config,
+                horizon_gameweeks=horizon,
+                n_sims=sims,
+                seed=seed,
+            )
+        except ValueError as exc:
+            _die(str(exc))
+        except Exception as exc:
+            _die(f"error en el backtest: {exc}")
+
+    # Tabla de resultados
+    from rich.table import Table
+
+    tabla = Table(show_header=True, header_style="bold")
+    tabla.add_column("Métrica", min_width=20)
+    tabla.add_column("Puro", justify="right")
+    tabla.add_column("Ajustado", justify="right")
+    tabla.add_column("Mejora", justify="right")
+
+    def _fmt_metric(p: float, a: float) -> tuple[str, str, str]:
+        mejora = (p - a) / p * 100 if p > 0 else 0.0
+        color = "green" if mejora > 0 else ("red" if mejora < 0 else "")
+        mejora_str = f"[{color}]{mejora:+.1f}%[/{color}]" if color else f"{mejora:+.1f}%"
+        return f"{p:.4f}", f"{a:.4f}", mejora_str
+
+    bp, ba, mbrier = _fmt_metric(result.brier_pure, result.brier_adjusted)
+    lp, la, mlogloss = _fmt_metric(result.logloss_pure, result.logloss_adjusted)
+
+    tabla.add_row("Brier score", bp, ba, mbrier)
+    tabla.add_row("Log-loss", lp, la, mlogloss)
+    console.print(tabla)
+
+    # Frase honesta sobre la mejora
+    brier_pct = result.brier_improvement * 100
+    console.print(f"\n[bold]Temporadas usadas:[/] {result.seasons}")
+    console.print(f"[bold]Horizonte:[/] {result.horizon_gameweeks} jornadas antes del final")
+    console.print(f"[bold]Simulaciones:[/] {result.n_sims}")
+
+    if brier_pct > 0:
+        console.print(
+            f"\nel modelo ajustado mejora el Brier un [green]{brier_pct:.1f}%[/] "
+            f"frente al modelo puro."
+        )
+    elif brier_pct < 0:
+        console.print(
+            f"\nel modelo ajustado [red]no mejora[/] el Brier (empeora un "
+            f"{abs(brier_pct):.1f}%) — puede que los parametros necesiten ajuste."
+        )
+    else:
+        console.print("\nel modelo ajustado no produce diferencia apreciable en Brier.")
 
 
 # --------------------------------------------------------------------------- #

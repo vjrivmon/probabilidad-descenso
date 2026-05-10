@@ -18,12 +18,18 @@ from descenso.adapters.data.cache import ParquetCache
 from descenso.adapters.data.clubelo_elo import ClubeloEloSource
 from descenso.adapters.data.schedule import OpenFootballScheduleSource
 from descenso.adapters.data.team_aliases import load_teams
+from descenso.application.build_strengths import (
+    StrengthBuildResult,
+    build_strengths,
+    build_strengths_from_data,
+)
 from descenso.config import AppConfig
 from descenso.domain.match import Match, MatchStatus
 from descenso.domain.match_model import EloLogisticMatchModel
 from descenso.domain.probabilities import RelegationProbabilities
 from descenso.domain.simulator import SimulationConfig, run_monte_carlo
 from descenso.domain.standings import build_table
+from descenso.domain.strength_model import effective_strengths
 from descenso.domain.team import Team
 
 logger = logging.getLogger(__name__)
@@ -83,8 +89,19 @@ def run_simulation(
     seed: int | None = None,
     prefer_cache: bool = True,
     inputs: SimulationInputs | None = None,
+    _build_result: StrengthBuildResult | None = None,
 ) -> SimulationOutcome:
-    """Carga datos, aplica los resultados fijados, simula y devuelve P(descenso) por equipo."""
+    """Carga datos, aplica los resultados fijados, simula y devuelve P(descenso) por equipo.
+
+    `_build_result` es un parámetro interno (prefijo _): permite inyectar el
+    resultado de `build_strengths` ya calculado (usado por `compare_models` para
+    evitar cargarlo dos veces) o en tests que no quieren tocar la red.
+
+    Si `inputs` se pasa explícitamente con `model_type='adjusted'`, se calcula la
+    forma directamente sobre los datos de `inputs` sin acceder al cache/red (útil
+    para tests unitarios con datos sintéticos).
+    """
+    _inputs_was_external = inputs is not None
     inputs = inputs or load_inputs(config, prefer_cache=prefer_cache)
     teams, elo, matches = inputs.teams, inputs.elo, inputs.matches
     team_ids = [t.id for t in teams]
@@ -96,12 +113,36 @@ def run_simulation(
     base_table = build_table(team_ids, played)
 
     notes: list[str] = []
-    strengths = dict(elo)  # CP1: fuerza efectiva = Elo de clubelo
+    strengths: dict[str, float]
+
     if config.model.model_type == "adjusted":
-        notes.append(
-            "el modelo ajustado (forma + xG + entrenadores) llega en el CP2; "
-            "esta simulación usa solo el Elo de clubelo (modelo puro)"
+        # CP2: construye fuerzas con forma + xG + entrenadores + bajas.
+        # Si ya tenemos el resultado pre-calculado, lo reutilizamos.
+        # Si inputs fue dado externamente (tests), usamos build_strengths_from_data
+        # para no acceder al cache/red con datos sintéticos.
+        if _build_result is not None:
+            build_result = _build_result
+        elif _inputs_was_external:
+            build_result = build_strengths_from_data(elo, played, config)
+        else:
+            build_result = build_strengths(config, prefer_cache=prefer_cache)
+        strengths = effective_strengths(build_result.snapshots)
+        notes.extend(build_result.notes)
+        if build_result.n_coach_changes_applied > 0:
+            notes.append(
+                f"modelo ajustado: {build_result.n_coach_changes_applied} cambio(s) de "
+                f"entrenador aplicado(s)"
+            )
+        # Siempre añadir una nota indicando que el modelo ajustado está activo
+        notes.insert(
+            0,
+            "modelo ajustado activo (forma + Elo"
+            + (", sin xG" if not build_result.xg_available else "")
+            + ")",
         )
+    else:
+        # modelo "pure": fuerza efectiva = Elo de clubelo (equivalente a alpha=1.0)
+        strengths = dict(elo)
 
     match_model = EloLogisticMatchModel(
         home_advantage_elo=config.model.home_advantage_elo,

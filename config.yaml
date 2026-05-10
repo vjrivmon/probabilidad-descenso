@@ -10,6 +10,8 @@ model:
   form_half_life_days: 75.0   # vida media del decaimiento temporal: ~3 meses pesan, el inicio de temporada casi no
   form_window_matches: 15     # máximo de partidos recientes que entran en el cálculo de forma
   xg_blend_beta: 0.6          # en el "rendimiento por partido": peso de los goles reales (0.6) vs los esperados xG (0.4)
+  form_k_factor: 40.0         # factor K del rendimiento por partido (cuánto Elo "vale" sobre/infra-rendir; ver docs/sensitivity.md)
+  form_goal_diff_scale: 1.0   # escala de la sigmoide goles->resultado en [0,1] (más bajo = un gol pesa más)
 
   # --- partido ---
   home_advantage_elo: 65.0    # ventaja de campo, en puntos Elo
