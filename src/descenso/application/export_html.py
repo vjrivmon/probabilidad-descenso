@@ -16,6 +16,13 @@ from descenso.adapters.data.schedule import season_slug
 
 _REPO_URL = "https://github.com/vjrivmon/probabilidad-descenso"
 
+# Aclaración fija (la duda nº1 de la afición: creen que el modelo ignora el calendario).
+_CALENDAR_NOTE = (
+    "El modelo simula el calendario restante de cada equipo con las reglas de "
+    "desempate de LaLiga: dos equipos con los mismos puntos pueden tener "
+    "probabilidades distintas según los rivales que les queden."
+)
+
 # Ancho (px) reservado para la barra de probabilidad dentro de su celda.
 _BAR_WIDTH = 220
 
@@ -176,6 +183,7 @@ def render_html_from_last_run(data: dict[str, Any]) -> str:
   <h1>Probabilidad de descenso a Segunda</h1>
   <p class="subtitle">LaLiga {_esc(slug)} · {n_played} partidos jugados · {_esc(suffix)}</p>
   <p class="meta">{_esc(subtitle)}</p>
+  <p class="note">{_esc(_CALENDAR_NOTE)}</p>
   {applied_html}
   <table>
     <thead>

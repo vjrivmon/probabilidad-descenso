@@ -139,6 +139,13 @@ def test_render_html_temporada_terminada() -> None:
     assert "temporada terminada" in html
 
 
+def test_render_html_incluye_la_nota_del_calendario() -> None:
+    """La aclaración nº1 de la afición (el modelo sí simula el calendario restante)."""
+    html = render_html_from_last_run(_last_run())
+    assert "simula el calendario restante" in html
+    assert 'class="note"' in html
+
+
 def test_export_html_report_escribe_el_fichero(tmp_path: Path) -> None:
     out = tmp_path / "sub" / "informe.html"
     returned = export_html_report(_last_run(), out)

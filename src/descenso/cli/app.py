@@ -8,6 +8,7 @@ Subcomandos:
     descenso compare        Tabla modelo puro vs ajustado + delta + nota.   (CP2)
     descenso backtest       Brier / log-loss puro vs ajustado sobre temporadas pasadas.  (CP2)
     descenso calibrate      Autocalibra alpha / form_half_life_days / form_k_factor (CP3).
+    descenso history        Evolución de la P(descenso) jornada a jornada en la temporada en curso.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from descenso.application.calibrate import calibrate as run_calibration
 from descenso.application.calibrate import suggest_config_yaml
 from descenso.application.compare_models import compare_models
 from descenso.application.export_html import export_html_report
+from descenso.application.history import season_history
 from descenso.application.run_simulation import (
     FixedResult,
     SimulationOutcome,
@@ -59,6 +61,14 @@ err_console = Console(stderr=True)
 
 _FIX_RE = re.compile(r"^\s*(.+?)\s+(\d{1,2})\s*-\s*(\d{1,2})\s+(.+?)\s*$")
 _SCORE_RE = re.compile(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$")
+
+# Aclaración fija: la queja nº1 de la afición es creer que el modelo "no tiene en
+# cuenta el calendario" cuando sí lo simula (ver docs/community-factors.md).
+_CALENDAR_NOTE = (
+    "el modelo simula el calendario restante de cada equipo con las reglas de "
+    "desempate de LaLiga: dos equipos con los mismos puntos pueden tener "
+    "probabilidades distintas según los rivales que les queden."
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -263,6 +273,7 @@ def report(
 
     block = _ranking_block(ranked, names, applied, top=top, header=header)
     typer.echo(block)
+    console.print(f"[dim]nota: {_CALENDAR_NOTE}[/]")
     if copy:
         if _copy_to_clipboard(block):
             console.print("[dim](copiado al portapapeles)[/]")
@@ -521,6 +532,76 @@ def calibrate(
     )
 
 
+@app.command()
+def history(
+    gameweeks: int = typer.Option(8, help="cuántas de las últimas jornadas completadas mostrar"),
+    sims: int = typer.Option(20_000, help="simulaciones por jornada"),
+    seed: int = typer.Option(None, help="semilla para reproducibilidad"),
+) -> None:
+    """Evolución de la P(descenso) jornada a jornada en la temporada en curso."""
+    _setup_logging()
+    config = _config()
+    if gameweeks < 1:
+        _die(f"--gameweeks debe ser >= 1 (es {gameweeks}).")
+    if sims < 1:
+        _die(f"--sims debe ser >= 1 (es {sims}).")
+
+    try:
+        inputs = load_inputs(config, prefer_cache=True)
+    except (ClubeloError, ScheduleError, TeamAliasError, FileNotFoundError) as exc:
+        _die(f"{exc}\n(¿has corrido `descenso data refresh`?)")
+
+    with console.status("reconstruyendo la serie por jornadas…"):
+        try:
+            hist = season_history(
+                config, n_gameweeks=gameweeks, n_sims=sims, seed=seed, inputs=inputs
+            )
+        except ValueError as exc:
+            _die(str(exc))
+
+    if not hist.points:
+        _die("no hay jornadas jugadas que mostrar.")
+
+    candidates = hist.candidate_team_ids()
+    names = hist.team_names
+    slug = season_slug(config.season)
+
+    console.print(f"\n[bold]Evolución de la P(descenso) — LaLiga {slug}[/]")
+    console.print(
+        f"[dim]modelo: {hist.model_type} · {hist.n_sims} sims/jornada · seed {seed} · "
+        f"jornadas J{hist.points[0].gameweek}-J{hist.points[-1].gameweek}[/]"
+    )
+    console.print(
+        "[dim](el Elo de clubelo se toma al valor de hoy en toda la serie; lo que varía es la "
+        "clasificación, la forma reciente, los cambios de entrenador y el calendario restante)[/]"
+    )
+
+    from rich.table import Table
+
+    tabla = Table(show_header=True, header_style="bold")
+    tabla.add_column("Equipo", min_width=20)
+    for pt in hist.points:
+        tabla.add_column(f"J{pt.gameweek}", justify="right")
+    tabla.add_column("Δ", justify="right")
+
+    for tid in candidates:
+        cells: list[str] = []
+        series = [pt.p_relegation.get(tid, 0.0) for pt in hist.points]
+        for p in series:
+            txt = f"{p * 100:.1f}" if round(p * 100, 1) > 0.0 else "·"
+            cells.append(txt)
+        delta = (series[-1] - series[0]) * 100.0
+        delta_style = "red" if delta > 0.5 else ("green" if delta < -0.5 else "")
+        delta_txt = f"{delta:+.1f}"
+        tabla.add_row(
+            names.get(tid, tid),
+            *cells,
+            f"[{delta_style}]{delta_txt}[/{delta_style}]" if delta_style else delta_txt,
+        )
+    console.print(tabla)
+    console.print(f"[dim]nota: {_CALENDAR_NOTE}[/]")
+
+
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
@@ -667,6 +748,7 @@ def _render_outcome(outcome: SimulationOutcome) -> None:
     applied = [(f.home_team, f.away_team) for f in outcome.applied_fixed]
     typer.echo("")
     typer.echo(_ranking_block(ranked, outcome.team_names, applied, top=0, header=""))
+    console.print(f"[dim]nota: {_CALENDAR_NOTE}[/]")
 
 
 def _copy_to_clipboard(text: str) -> bool:
