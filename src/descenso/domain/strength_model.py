@@ -46,6 +46,7 @@ class StrengthSnapshot:
     delta_coach: float  # Delta_coach(i): bonus por cambio de entrenador (decae)
     delta_injuries: float  # Delta_inj(i): ajuste manual por bajas
     alpha: float  # peso del Elo base frente al form rating (1.0 = modelo puro)
+    delta_motivation: float = 0.0  # bonus por motivación contextual (última jornada)
 
     @property
     def form_component(self) -> float:
@@ -54,16 +55,17 @@ class StrengthSnapshot:
 
     @property
     def r_eff(self) -> float:
-        """Fuerza efectiva final: `alpha·E + (1-alpha)·F + Delta_coach + Delta_inj`."""
+        """Fuerza efectiva final: `alpha·E + (1-alpha)·F + Delta_coach + Delta_inj + Delta_motivation`."""
         return (
             self.alpha * self.elo_base
             + (1.0 - self.alpha) * self.form_rating
             + self.delta_coach
             + self.delta_injuries
+            + self.delta_motivation
         )
 
     def dominant_factor(self) -> str:
-        """El factor (forma / entrenador / bajas) que más mueve `R_eff` frente al Elo puro.
+        """El factor (forma / entrenador / bajas / motivación) que más mueve `R_eff` frente al Elo puro.
 
         Devuelve '' si ninguno aporta nada (modelo equivalente al puro para este equipo).
         """
@@ -71,6 +73,7 @@ class StrengthSnapshot:
             "forma": self.form_component,
             "cambio de entrenador": self.delta_coach,
             "bajas": self.delta_injuries,
+            "motivación": self.delta_motivation,
         }
         best = max(candidates, key=lambda k: abs(candidates[k]))
         return best if abs(candidates[best]) > 1e-9 else ""
@@ -83,6 +86,7 @@ def compute_strengths(
     injury_adjustments: dict[str, float],
     as_of: dt.date,
     config: ModelConfig,
+    motivation_bonuses: dict[str, float] | None = None,
 ) -> dict[str, StrengthSnapshot]:
     """Calcula la fuerza efectiva de cada equipo de `elo_base` a fecha `as_of`.
 
@@ -96,6 +100,10 @@ def compute_strengths(
 
     Con `config.alpha == 1.0` y sin cambios/bajas el resultado es equivalente a
     usar solo `elo_base` (modelo puro).
+
+    `motivation_bonuses`: `{team_id: elo_delta}` por motivación contextual (ej.
+    bonus en última jornada para equipos luchando por salvación). Se suma como
+    un delta adicional a la fuerza efectiva.
     """
     alpha = config.alpha
     half_life = config.form_half_life_days
@@ -140,6 +148,7 @@ def compute_strengths(
             decay_matches,
         )
         delta_inj = injury_adjustments.get(team_id, 0.0)
+        delta_mot = (motivation_bonuses or {}).get(team_id, 0.0)
 
         snapshots[team_id] = StrengthSnapshot(
             team=team_id,
@@ -150,6 +159,7 @@ def compute_strengths(
             delta_coach=delta_coach,
             delta_injuries=delta_inj,
             alpha=alpha,
+            delta_motivation=delta_mot,
         )
     return snapshots
 

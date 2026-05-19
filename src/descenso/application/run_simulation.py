@@ -26,6 +26,7 @@ from descenso.application.build_strengths import (
 from descenso.config import AppConfig
 from descenso.domain.match import Match, MatchStatus
 from descenso.domain.match_model import make_match_model
+from descenso.domain.motivation import compute_motivation
 from descenso.domain.probabilities import RelegationProbabilities
 from descenso.domain.simulator import SimulationConfig, run_monte_carlo
 from descenso.domain.standings import build_table
@@ -112,6 +113,15 @@ def run_simulation(
 
     base_table = build_table(team_ids, played)
 
+    # Calcular motivación contextual (factor del modelo ajustado)
+    sorted_standings = sorted(base_table, key=lambda r: r.total_points, reverse=True)
+    remaining_by_team: dict[str, int] = {}
+    for m in pending:
+        remaining_by_team[m.home_team] = remaining_by_team.get(m.home_team, 0) + 1
+        remaining_by_team[m.away_team] = remaining_by_team.get(m.away_team, 0) + 1
+    motivation = compute_motivation(sorted_standings, remaining_by_team)
+    motivation_bonuses = {t: m.bonus_elo for t, m in motivation.items()}
+
     notes: list[str] = []
     strengths: dict[str, float]
 
@@ -123,9 +133,13 @@ def run_simulation(
         if _build_result is not None:
             build_result = _build_result
         elif _inputs_was_external:
-            build_result = build_strengths_from_data(elo, played, config)
+            build_result = build_strengths_from_data(
+                elo, played, config, motivation_bonuses=motivation_bonuses
+            )
         else:
-            build_result = build_strengths(config, prefer_cache=prefer_cache)
+            build_result = build_strengths(
+                config, prefer_cache=prefer_cache, motivation_bonuses=motivation_bonuses
+            )
         strengths = effective_strengths(build_result.snapshots)
         notes.extend(build_result.notes)
         if build_result.n_coach_changes_applied > 0:
@@ -140,6 +154,14 @@ def run_simulation(
             + (", sin xG" if not build_result.xg_available else "")
             + ")",
         )
+        # Nota sobre motivación si hay bonuses aplicados
+        active_mot = {t: m for t, m in motivation.items() if m.bonus_elo > 0}
+        if active_mot:
+            n_mot = len(active_mot)
+            notes.append(
+                f"motivación contextual: {n_mot} equipo(s) con bonus"
+                f" (máx: +{max(m.bonus_elo for m in active_mot.values()):.0f} Elo)"
+            )
     else:
         # modelo "pure": fuerza efectiva = Elo de clubelo (equivalente a alpha=1.0)
         strengths = dict(elo)
@@ -153,7 +175,8 @@ def run_simulation(
         seed=seed,
     )
     probabilities = run_monte_carlo(
-        team_ids, base_table, pending, strengths, match_model, sim_config
+        team_ids, base_table, pending, strengths, match_model, sim_config,
+        played_matches=played,
     )
 
     return SimulationOutcome(

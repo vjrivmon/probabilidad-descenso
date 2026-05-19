@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 
 import numpy as np
@@ -10,6 +11,7 @@ from descenso.domain.match import Match
 from descenso.domain.match_model import MatchModel
 from descenso.domain.probabilities import RelegationProbabilities, TeamProbabilities
 from descenso.domain.standings import TeamRow
+from descenso.domain.tiebreakers import build_h2h_lookup, precompute_h2h
 
 # Cotas para empaquetar (puntos, dif. de goles, goles a favor) en una sola clave
 # entera y poder hacer un único `argsort` por simulación. Holgadas para 38 jornadas
@@ -26,6 +28,109 @@ class SimulationConfig:
     seed: int | None = None
 
 
+def _resolve_tiebreaker_with_h2h(
+    sim_idx: int,
+    pts_row: np.ndarray,
+    gf_row: np.ndarray,
+    ga_row: np.ndarray,
+    team_ids: list[str],
+    idx: dict[str, int],
+    h2h_lookup: dict[str, dict[str, tuple[int, int, int]]],
+) -> np.ndarray:
+    """Resuelve el orden de una simulación usando desempates h2h de LaLiga.
+
+    Devuelve un array con la posición final (1 = mejor) de cada equipo.
+    """
+    n_teams = len(team_ids)
+
+    # Crear lista de (team, pts, gd, gf) para ordenar
+    rows = []
+    for i, tid in enumerate(team_ids):
+        rows.append((tid, int(pts_row[i]), int(gf_row[i] - ga_row[i]), int(gf_row[i])))
+
+    # Ordenar por puntos (descendente), luego recursivamente desempatar
+    def sort_with_tiebreak(team_rows):
+        if len(team_rows) <= 1:
+            return team_rows
+
+        # Agrupar por puntos
+        by_pts = defaultdict(list)
+        for tr in team_rows:
+            by_pts[tr[1]].append(tr)
+
+        result = []
+        for pts_val in sorted(by_pts.keys(), reverse=True):
+            group = by_pts[pts_val]
+            if len(group) == 1:
+                result.append(group[0])
+                continue
+
+            # Empate a puntos: resolver con mini-liga h2h
+            team_names = [tr[0] for tr in group]
+            if len(team_names) == 2:
+                a, b = team_names
+                pts_a, gd_a, gf_a = h2h_lookup.get(a, {}).get(b, (0, 0, 0))
+                pts_b, gd_b, gf_b = h2h_lookup.get(b, {}).get(a, (0, 0, 0))
+                if pts_a != pts_b:
+                    if pts_a > pts_b:
+                        result.extend([tr for tr in group if tr[0] == a])
+                        result.extend([tr for tr in group if tr[0] == b])
+                    else:
+                        result.extend([tr for tr in group if tr[0] == b])
+                        result.extend([tr for tr in group if tr[0] == a])
+                elif gd_a != gd_b:
+                    if gd_a > gd_b:
+                        result.extend([tr for tr in group if tr[0] == a])
+                        result.extend([tr for tr in group if tr[0] == b])
+                    else:
+                        result.extend([tr for tr in group if tr[0] == b])
+                        result.extend([tr for tr in group if tr[0] == a])
+                else:
+                    # Empate total: usar gd general, luego gf, luego id
+                    result.extend(sorted(group, key=lambda tr: (-tr[2], -tr[3], tr[0])))
+            else:
+                # 3+ equipos empatados: mini-liga
+                sub = {}
+                for t in team_names:
+                    sub_pts, sub_gd, sub_gf = 0, 0, 0
+                    for opp in team_names:
+                        if opp == t:
+                            continue
+                        h2h_pts, h2h_gd, h2h_gf = h2h_lookup.get(t, {}).get(opp, (0, 0, 0))
+                        sub_pts += h2h_pts
+                        sub_gd += h2h_gd
+                        sub_gf += h2h_gf
+                    sub[t] = (sub_pts, sub_gd, sub_gf)
+
+                # Particionar por (pts_h2h, gd_h2h)
+                sub_groups = defaultdict(list)
+                for tr in group:
+                    t = tr[0]
+                    key = (sub[t][0], sub[t][1])
+                    sub_groups[key].append(tr)
+
+                sorted_keys = sorted(sub_groups.keys(), key=lambda k: (-k[0], -k[1]))
+                for key in sorted_keys:
+                    sub_group = sub_groups[key]
+                    if len(sub_group) == 1:
+                        result.append(sub_group[0])
+                    else:
+                        # Empate persistente en mini-liga: usar gd general
+                        result.extend(sorted(sub_group, key=lambda tr: (-tr[2], -tr[3], tr[0])))
+
+        return result
+
+    sorted_rows = sort_with_tiebreak(rows)
+
+    # Asignar posiciones
+    positions = np.zeros(n_teams, dtype=np.int64)
+    for pos, tr in enumerate(sorted_rows, start=1):
+        i = idx[tr[0]]
+        positions[i] = pos
+
+    return positions
+
+
 def run_monte_carlo(
     team_ids: list[str],
     base_table: list[TeamRow],
@@ -33,18 +138,17 @@ def run_monte_carlo(
     strengths: dict[str, float],
     match_model: MatchModel,
     config: SimulationConfig,
+    played_matches: list[Match] | None = None,
 ) -> RelegationProbabilities:
     """Corre `config.n_sims` simulaciones del calendario restante.
 
     Para cada iteración: respeta los partidos con resultado fijado (`is_fixed`),
-    muestrea el resto con `match_model`, construye la clasificación final y
-    registra qué equipos caen en las últimas `n_relegation` plazas. Devuelve las
-    probabilidades agregadas por equipo.
+    muestrea el resto con `match_model`, construye la clasificación final usando
+    desempates h2h de LaLiga y registra qué equipos caen en las últimas
+    `n_relegation` plazas. Devuelve las probabilidades agregadas por equipo.
 
-    Nota sobre los desempates: el ranking por simulación usa puntos -> diferencia
-    de goles general -> goles a favor (las reglas exactas con enfrentamientos
-    directos / mini-liga viven en `domain.tiebreakers.resolve_order`; aplicarlas
-    por simulación no es vectorizable y su efecto sobre P(descenso) es marginal).
+    Si se pasa `played_matches`, se usa para desempates h2h (recomendado para
+    la última jornada cuando hay muchos empatados).
     """
     if config.n_sims <= 0:
         raise ValueError(f"n_sims debe ser > 0, es {config.n_sims}")
@@ -106,13 +210,27 @@ def run_monte_carlo(
         pts[:, h] += np.where(home_win, 3, np.where(draw, 1, 0))
         pts[:, a] += np.where(away_win, 3, np.where(draw, 1, 0))
 
-    gd = gf - ga
-    sort_key = (pts * _GD_SPAN + (gd + _GD_OFFSET)) * _GF_SPAN + gf
-    # de mejor a peor -> orden descendente; estable para que el "sorteo" sea reproducible
-    order = np.argsort(-sort_key, axis=1, kind="stable")
-    final_pos = np.empty((n_sims, n_teams), dtype=np.int64)
-    rows_ix = np.arange(n_sims)[:, None]
-    final_pos[rows_ix, order] = np.arange(1, n_teams + 1)[None, :]
+    # --- Desempate ---
+    if played_matches is not None:
+        # Desempate h2h completo (más lento pero correcto)
+        h2h_data = precompute_h2h(team_ids, played_matches)
+        h2h_lookup = build_h2h_lookup(team_ids, h2h_data)
+
+        final_pos = np.empty((n_sims, n_teams), dtype=np.int64)
+        for sim_i in range(n_sims):
+            pos = _resolve_tiebreaker_with_h2h(
+                sim_i, pts[sim_i], gf[sim_i], ga[sim_i],
+                team_ids, idx, h2h_lookup,
+            )
+            final_pos[sim_i] = pos
+    else:
+        # Desempate rápido por (pts, gd, gf) — aproximación
+        gd = gf - ga
+        sort_key = (pts * _GD_SPAN + (gd + _GD_OFFSET)) * _GF_SPAN + gf
+        order = np.argsort(-sort_key, axis=1, kind="stable")
+        final_pos = np.empty((n_sims, n_teams), dtype=np.int64)
+        rows_ix = np.arange(n_sims)[:, None]
+        final_pos[rows_ix, order] = np.arange(1, n_teams + 1)[None, :]
 
     cutoff = n_teams - config.n_relegation
     relegated = final_pos > cutoff

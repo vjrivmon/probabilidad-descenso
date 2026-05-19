@@ -104,3 +104,68 @@ def resolve_order(
     for group in _partition(list(row_by_team), key=lambda t: row_by_team[t].total_points):
         result.extend(group if len(group) == 1 else resolve_tied(group))
     return [row_by_team[t] for t in result]
+
+
+# ---------------------------------------------------------------------------
+# Versiones precomputadas para el simulador vectorizado (sin h2h recursivo)
+# ---------------------------------------------------------------------------
+
+def precompute_h2h(
+    team_ids: list[str],
+    played_matches: Sequence[Match],
+) -> dict[tuple[str, str], tuple[int, int, int]]:
+    """Precomputa los resultados h2h entre todos los pares de equipos.
+
+    Devuelve `{(team_a, team_b): (pts_a, gd_a, gf_a)}` donde los valores son
+    para `team_a` frente a `team_b` (solo partidos jugados entre ambos).
+    """
+    h2h: dict[tuple[str, str], tuple[int, int, int]] = {}
+    for t1 in team_ids:
+        for t2 in team_ids:
+            if t1 != t2:
+                h2h[(t1, t2)] = (0, 0, 0)
+
+    for m in _played(played_matches):
+        h, a = m.home_team, m.away_team
+        if h not in set(team_ids) or a not in set(team_ids):
+            continue
+        hg, ag = m.home_goals, m.away_goals
+        assert hg is not None and ag is not None
+
+        # Actualizar registros de h2h para ambos equipos
+        pts_h, gd_h, gf_h = h2h[(h, a)]
+        pts_a, gd_a, gf_a = h2h[(a, h)]
+
+        gf_h += hg
+        gf_a += ag
+        gd_h += hg - ag
+        gd_a += ag - hg
+
+        if hg > ag:
+            pts_h += 3
+        elif hg < ag:
+            pts_a += 3
+        else:
+            pts_h += 1
+            pts_a += 1
+
+        h2h[(h, a)] = (pts_h, gd_h, gf_h)
+        h2h[(a, h)] = (pts_a, gd_a, gf_a)
+
+    return h2h
+
+
+def build_h2h_lookup(
+    team_ids: list[str],
+    h2h_data: dict[tuple[str, str], tuple[int, int, int]],
+) -> dict[str, dict[str, tuple[int, int, int]]]:
+    """Convierte el formato de precompute_h2h a un lookup anidado.
+
+    Devuelve `{team_a: {team_b: (pts, gd, gf)}}` para acceso rápido.
+    """
+    lookup: dict[str, dict[str, tuple[int, int, int]]] = {
+        t: {} for t in team_ids
+    }
+    for (t1, t2), val in h2h_data.items():
+        lookup[t1][t2] = val
+    return lookup

@@ -42,6 +42,7 @@ def build_strengths_from_data(
     played_matches: list[Match],
     config: AppConfig,
     as_of: dt.date | None = None,
+    motivation_bonuses: dict[str, float] | None = None,
 ) -> StrengthBuildResult:
     """Calcula fuerzas a partir de datos ya cargados (Elo y partidos jugados).
 
@@ -75,6 +76,7 @@ def build_strengths_from_data(
         injury_adjustments=effective_injuries,
         as_of=as_of,
         config=model_cfg,
+        motivation_bonuses=motivation_bonuses,
     )
 
     return StrengthBuildResult(
@@ -89,6 +91,7 @@ def build_strengths(
     config: AppConfig,
     as_of: dt.date | None = None,
     prefer_cache: bool = True,
+    motivation_bonuses: dict[str, float] | None = None,
 ) -> StrengthBuildResult:
     """Carga datos y calcula las fuerzas efectivas de cada equipo a `as_of`.
 
@@ -154,6 +157,7 @@ def build_strengths(
         injury_adjustments=effective_injuries,
         as_of=as_of,
         config=model_cfg,
+        motivation_bonuses=motivation_bonuses,
     )
 
     return StrengthBuildResult(
